@@ -3,7 +3,7 @@
  * Persists current child ID and borrow requests in localStorage so two browser
  * tabs (or a single tab with the switcher) can simulate two users interacting.
  */
-import type { BorrowRequest, Book } from "./types";
+import type { BorrowRequest, Book, Child } from "./types";
 import { DEMO_BOOKS, DEMO_BORROW_REQUESTS } from "./demoData";
 
 export const DEMO_CHILDREN = [
@@ -318,11 +318,11 @@ export function createBorrowRequest(bookId: string, borrowerChildId: DemoChildId
     returned_at: null,
     return_confirmed_at: null,
     book,
-    borrower_child: borrowerChild
-      ? { id: borrowerChild.id, parent_id: "p_demo", name: borrowerChild.name, age_group: borrowerChild.ageGroup, bookbuddy_id: "BB-DEMO", created_at: "" }
+        borrower_child: borrowerChild
+      ? { id: borrowerChild.id, parent_id: "p_demo", name: borrowerChild.name, age_group: borrowerChild.ageGroup as Child["age_group"], bookbuddy_id: "BB-DEMO", created_at: "" }
       : undefined,
     lister_child: listerChild
-      ? { id: listerChild.id, parent_id: "p_demo", name: listerChild.name, age_group: listerChild.ageGroup, bookbuddy_id: "BB-DEMO", created_at: "" }
+      ? { id: listerChild.id, parent_id: "p_demo", name: listerChild.name, age_group: listerChild.ageGroup as Child["age_group"], bookbuddy_id: "BB-DEMO", created_at: "" }
       : book.child
         ? { id: book.child.id, parent_id: "p_demo", name: book.child.name, age_group: book.child.age_group, bookbuddy_id: book.child.bookbuddy_id, created_at: "" }
         : undefined,
@@ -417,7 +417,7 @@ export function saveListedBook(data: {
       id: childId,
       parent_id: "p_demo",
       name: child.name,
-      age_group: child.ageGroup,
+      age_group: child.ageGroup as Child["age_group"],
       bookbuddy_id: "BB-DEMO",
       created_at:  "",
     },
