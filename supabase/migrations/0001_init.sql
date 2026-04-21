@@ -84,14 +84,6 @@ CREATE TABLE IF NOT EXISTS public.borrow_requests (
   return_confirmed_at  timestamptz
 );
 
--- Waitlist (for when registration is paused, or for leads outside active societies)
-CREATE TABLE IF NOT EXISTS public.waitlist (
-  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  phone      text NOT NULL,
-  note       text,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
 -- =====================================================================
 -- Indexes
 -- =====================================================================
@@ -149,7 +141,6 @@ ALTER TABLE public.parents          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.children         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.books            ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.borrow_requests  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.waitlist         ENABLE ROW LEVEL SECURITY;
 
 -- ----- societies -----
 -- All authenticated users can read all societies (for dropdown search).
@@ -266,14 +257,6 @@ CREATE POLICY "br_update_involved"
     public.is_parent_of(borrower_child_id)
     OR public.is_parent_of(lister_child_id)
   );
-
--- ----- waitlist -----
--- Anyone (including anon) can insert a waitlist entry.
--- Read/update/delete: admin only.
-
-CREATE POLICY "waitlist_insert_anyone"
-  ON public.waitlist FOR INSERT
-  WITH CHECK (true);
 
 -- =====================================================================
 -- Done.
