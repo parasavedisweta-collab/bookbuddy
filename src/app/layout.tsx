@@ -3,6 +3,7 @@ import { Be_Vietnam_Pro, Plus_Jakarta_Sans } from "next/font/google";
 import BottomNav from "@/components/BottomNav";
 import DevUserSwitcher from "@/components/DevUserSwitcher";
 import "./globals.css";
+import SupabaseAuthBootstrap from "@/components/SupabaseAuthBootstrap";
 
 const beVietnamPro = Be_Vietnam_Pro({
   subsets: ["latin"],
@@ -54,6 +55,7 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full flex flex-col pb-20">
+        <SupabaseAuthBootstrap />
         {process.env.NEXT_PUBLIC_ENV === "uat" && (
           <div className="fixed top-2 right-2 z-[100] bg-secondary text-on-secondary text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-widest shadow">
             UAT
