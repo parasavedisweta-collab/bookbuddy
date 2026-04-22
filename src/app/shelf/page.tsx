@@ -10,6 +10,8 @@ import {
   removeListedBook,
   type DemoChildId,
 } from "@/lib/userStore";
+import { fetchMyShelfBooks } from "@/lib/supabase/feed";
+import { updateBookStatus } from "@/lib/supabase/books";
 import { daysSince, relativeTime, whatsappLink, phoneLink } from "@/lib/helpers";
 import type { BorrowRequest, Book } from "@/lib/types";
 import Button from "@/components/ui/Button";
@@ -224,6 +226,14 @@ export default function ShelfPage() {
   const [childId, setChildId] = useState<DemoChildId>("c1");
   const [requests, setRequests] = useState<BorrowRequest[]>([]);
   const [books, setBooks] = useState<Book[]>([]);
+  // Supabase-backed copy of this parent's books + all Supabase child IDs they
+  // own. Merged into `books` below so a registered user sees their real rows
+  // even though the localStorage child id (c_<ts>) differs from the Supabase
+  // UUID.
+  const [supabaseBooks, setSupabaseBooks] = useState<Book[]>([]);
+  const [mySupabaseChildIds, setMySupabaseChildIds] = useState<Set<string>>(
+    () => new Set()
+  );
 
   const refresh = useCallback(() => {
     setChildId(getCurrentChildId());
@@ -243,32 +253,72 @@ export default function ShelfPage() {
     };
   }, [refresh]);
 
+  // Pull the Supabase shelf. Fires on mount + whenever local state says the
+  // user changed or books changed (so a just-dual-written book appears here
+  // without a hard reload).
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSupabase() {
+      try {
+        const { books: sbBooks, childIds } = await fetchMyShelfBooks();
+        if (cancelled) return;
+        setSupabaseBooks(sbBooks);
+        setMySupabaseChildIds(new Set(childIds));
+      } catch (err) {
+        console.error("[shelf] supabase load failed:", err);
+      }
+    }
+    loadSupabase();
+    const onChange = () => loadSupabase();
+    window.addEventListener("bb_user_change", onChange);
+    window.addEventListener("bb_books_change", onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("bb_user_change", onChange);
+      window.removeEventListener("bb_books_change", onChange);
+    };
+  }, []);
+
+  // A book/request belongs to "me" if its child_id matches the localStorage
+  // demo/registered child OR any of my Supabase children (the IDs differ
+  // between stores during the dual-write migration).
+  const isMyChild = (id: string) => id === childId || mySupabaseChildIds.has(id);
+
   // Section 1: Books I requested (as borrower, pending/declined)
   const myRequests = requests.filter(
     (r) =>
-      r.borrower_child_id === childId &&
+      isMyChild(r.borrower_child_id) &&
       (r.status === "pending" || r.status === "declined")
   );
 
   // Section 2: Books I'm reading (as borrower, approved/picked_up)
   const myReading = requests.filter(
     (r) =>
-      r.borrower_child_id === childId &&
+      isMyChild(r.borrower_child_id) &&
       (r.status === "approved" || r.status === "picked_up")
   );
 
   // Section 3: Books I'm lending (as lister, active)
   const myLending = requests.filter(
     (r) =>
-      r.lister_child_id === childId &&
+      isMyChild(r.lister_child_id) &&
       (r.status === "pending" || r.status === "approved" || r.status === "picked_up")
   );
 
+  // Merge localStorage books with Supabase books (Supabase wins on dedup —
+  // it has the real child name and survives localStorage wipes).
+  const mergedBooks = (() => {
+    const byId = new Map<string, Book>();
+    for (const b of books) byId.set(b.id, b);
+    for (const b of supabaseBooks) byId.set(b.id, b);
+    return Array.from(byId.values());
+  })();
+
   // Section 4: My available books not in active lending requests
   const activeLendingBookIds = new Set(myLending.map((r) => r.book_id));
-  const myAvailableBooks = books.filter(
+  const myAvailableBooks = mergedBooks.filter(
     (b) =>
-      b.child_id === childId &&
+      isMyChild(b.child_id) &&
       b.status === "available" &&
       !activeLendingBookIds.has(b.id)
   );
@@ -350,7 +400,21 @@ export default function ShelfPage() {
                 key={book.id}
                 book={book}
                 isLast={myAvailableBooks.length <= 1}
-                onRemove={(id) => { removeListedBook(id); refresh(); }}
+                onRemove={async (id) => {
+                  // Always clear the local copy so the UI updates instantly.
+                  removeListedBook(id);
+                  // If this row also lives in Supabase (id looks like a UUID),
+                  // soft-delete it there too. Fail-open — the local remove
+                  // has already happened and we don't want to block the UI.
+                  if (/^[0-9a-f-]{36}$/i.test(id)) {
+                    try {
+                      await updateBookStatus(id, "removed");
+                    } catch (err) {
+                      console.error("[shelf] supabase remove failed:", err);
+                    }
+                  }
+                  refresh();
+                }}
               />
             ))}
           </div>
