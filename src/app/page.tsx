@@ -4,6 +4,11 @@ import { useState, useMemo, useEffect } from "react";
 import BookCard from "@/components/BookCard";
 import GenreChips from "@/components/GenreChips";
 import { getAllBooks, getAllRequests, getCurrentChildId, getCurrentUserSocietyId } from "@/lib/userStore";
+import {
+  fetchSocietyFeed,
+  resolveCurrentSocietyId,
+} from "@/lib/supabase/feed";
+import { listChildrenForCurrentParent } from "@/lib/supabase/children";
 import type { Genre, Book, BorrowRequest } from "@/lib/types";
 
 export default function HomePage() {
@@ -13,6 +18,12 @@ export default function HomePage() {
   const [allRequests, setAllRequests] = useState<BorrowRequest[]>([]);
   const [currentChildId, setCurrentChildId] = useState("c1");
   const [societyId, setSocietyId] = useState("s1");
+  // Supabase-backed feed and "mine" filter. Kept separate from localStorage
+  // books so a failed Supabase call never masks local/demo data.
+  const [supabaseFeed, setSupabaseFeed] = useState<Book[]>([]);
+  const [mySupabaseChildIds, setMySupabaseChildIds] = useState<Set<string>>(
+    () => new Set()
+  );
 
   useEffect(() => {
     const refresh = () => {
@@ -32,6 +43,42 @@ export default function HomePage() {
     };
   }, []);
 
+  // Pull the Supabase-backed feed. Runs in parallel with the localStorage
+  // hydration above; either source can populate the grid. The `cancelled`
+  // flag guards against a late resolve on an unmounted component.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSupabase() {
+      try {
+        const [sid, myChildren] = await Promise.all([
+          resolveCurrentSocietyId(),
+          listChildrenForCurrentParent(),
+        ]);
+        if (cancelled) return;
+        setMySupabaseChildIds(new Set(myChildren.map((c) => c.id)));
+        if (!sid) {
+          setSupabaseFeed([]);
+          return;
+        }
+        const books = await fetchSocietyFeed(sid);
+        if (!cancelled) setSupabaseFeed(books);
+      } catch (err) {
+        console.error("[home] supabase feed load failed:", err);
+      }
+    }
+    loadSupabase();
+    // Reload when the user or their local book state changes — covers
+    // registration completing mid-session and new dual-written books.
+    const onChange = () => loadSupabase();
+    window.addEventListener("bb_user_change", onChange);
+    window.addEventListener("bb_books_change", onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("bb_user_change", onChange);
+      window.removeEventListener("bb_books_change", onChange);
+    };
+  }, []);
+
   const filteredBooks = useMemo(() => {
     // Books the current user is already interacting with (on their shelf)
     const myShelfBookIds = new Set(
@@ -44,13 +91,30 @@ export default function HomePage() {
         .map((r) => r.book_id)
     );
 
-    // Show books from the same society, not owned by current user, not already on their shelf
-    let books = allBooks.filter(
-      (b) =>
-        b.society_id === societyId &&
-        b.child_id !== currentChildId &&
-        !myShelfBookIds.has(b.id)
+    // A book is "mine" if its child_id matches either the localStorage
+    // demo/registered childId or any Supabase child owned by this parent.
+    const isMine = (childId: string) =>
+      childId === currentChildId || mySupabaseChildIds.has(childId);
+
+    // localStorage books use slug society IDs (e.g. "s_green_meadows_mumbai");
+    // Supabase books use UUIDs. They never collide, so society filtering has
+    // to be source-aware: apply `societyId === ...` only to local books, and
+    // trust that `fetchSocietyFeed(sid)` already scoped the Supabase set
+    // server-side.
+    const localMatches = allBooks.filter(
+      (b) => b.society_id === societyId && !isMine(b.child_id) && !myShelfBookIds.has(b.id)
     );
+    const supabaseMatches = supabaseFeed.filter(
+      (b) => !isMine(b.child_id) && !myShelfBookIds.has(b.id)
+    );
+
+    // Merge, deduping by id. Supabase wins on collisions: the dual-write
+    // phase writes to both stores but only Supabase has the real joined
+    // society_id / child name, so we prefer that copy.
+    const byId = new Map<string, Book>();
+    for (const b of localMatches) byId.set(b.id, b);
+    for (const b of supabaseMatches) byId.set(b.id, b);
+    let books = Array.from(byId.values());
 
     if (genreFilter) {
       books = books.filter((b) => b.genre === genreFilter);
@@ -74,7 +138,16 @@ export default function HomePage() {
     });
 
     return books;
-  }, [search, genreFilter, allBooks, allRequests, currentChildId, societyId]);
+  }, [
+    search,
+    genreFilter,
+    allBooks,
+    supabaseFeed,
+    allRequests,
+    currentChildId,
+    societyId,
+    mySupabaseChildIds,
+  ]);
 
   return (
     <main className="flex-1 w-full max-w-2xl mx-auto">

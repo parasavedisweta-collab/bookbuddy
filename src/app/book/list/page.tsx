@@ -482,6 +482,13 @@ export default function ListBookPage() {
         });
         if (!book) {
           console.warn("[book-list] Supabase createBook returned null");
+        } else {
+          // `saveListedBook` above already fired bb_books_change, but that
+          // fired synchronously before this async insert completed — so the
+          // Supabase-backed feed effects missed the new row. Fire again so
+          // the home/shelf re-fetch and the UUID-keyed row replaces the
+          // local placeholder on the next render.
+          window.dispatchEvent(new Event("bb_books_change"));
         }
       }
     } catch (err) {
