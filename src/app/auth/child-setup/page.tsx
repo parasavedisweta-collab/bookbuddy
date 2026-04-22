@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
-import { AGE_RANGES } from "@/lib/types";
+import { AGE_RANGES, ageDisplayToDb } from "@/lib/types";
 import {
   registerNewChild,
   searchSocieties,
@@ -12,6 +12,9 @@ import {
   type SocietySuggestion,
 } from "@/lib/userStore";
 import { suggestCities, canonicaliseCity } from "@/lib/cities";
+import { findOrCreateSociety } from "@/lib/supabase/societies";
+import { createParent } from "@/lib/supabase/parents";
+import { createChild } from "@/lib/supabase/children";
 
 interface NominatimResult {
   place_id: number;
@@ -203,6 +206,54 @@ export default function ChildSetupPage() {
     if (!childName || !ageGroup || !consent || !chosen) return;
     setLoading(true);
 
+    // Write to Supabase first. Dual-write to localStorage below keeps the
+    // rest of the app (profile, home feed, book listing) working during
+    // the migration — those callsites will move to Supabase reads next.
+    //
+    // Failures here fall through and still land the user on /success so
+    // UAT smoke-testing isn't blocked by a transient network issue. The
+    // error is logged loudly; admins can spot orphaned localStorage-only
+    // accounts by diffing Supabase users against local traffic.
+    try {
+      const parentPhone =
+        localStorage.getItem("bb_parent_phone") ?? undefined;
+      const ageGroupDb = ageDisplayToDb(ageGroup);
+
+      if (parentPhone && ageGroupDb) {
+        const society = await findOrCreateSociety(chosen.name, chosen.city);
+        if (society) {
+          const parent = await createParent({
+            phone: parentPhone,
+            society_id: society.id,
+          });
+          if (parent) {
+            await createChild({
+              name: childName,
+              age_group: ageGroupDb,
+            });
+          } else {
+            console.warn(
+              "[child-setup] parent insert returned null; continuing on local only"
+            );
+          }
+        } else {
+          console.warn(
+            "[child-setup] society upsert returned null; continuing on local only"
+          );
+        }
+      } else {
+        console.warn(
+          "[child-setup] missing phone or invalid age group; skipping Supabase writes",
+          { parentPhone, ageGroup, ageGroupDb }
+        );
+      }
+    } catch (err) {
+      console.error("[child-setup] Supabase write failed:", err);
+    }
+
+    // Legacy localStorage path — keeps the rest of the app functional
+    // until reads are migrated. Remove once profile/home/shelf/feed all
+    // pull from Supabase.
     localStorage.setItem(
       "bb_child",
       JSON.stringify({
@@ -225,7 +276,6 @@ export default function ChildSetupPage() {
       parentPhone,
     });
 
-    await new Promise((r) => setTimeout(r, 500));
     router.push("/auth/success");
     setLoading(false);
   }

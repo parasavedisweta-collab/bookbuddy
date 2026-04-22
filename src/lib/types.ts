@@ -74,6 +74,29 @@ export const GENRES: Genre[] = [
 export const AGE_RANGES = ["Below 5", "6-8", "9-12", "12+"] as const;
 export type AgeRange = (typeof AGE_RANGES)[number];
 
+/**
+ * Pairs the human-readable age-range label (shown in the UI) with the
+ * value persisted to Supabase. Kept in sync with the CHECK constraint
+ * on public.children.age_group in supabase/migrations/0001_init.sql.
+ *
+ * Use this when rendering the age picker and writing to the DB — do
+ * not hand-map "Below 5" ↔ "below-5" in callsites.
+ */
+export const AGE_GROUP_OPTIONS: {
+  display: AgeRange;
+  value: Child["age_group"];
+}[] = [
+  { display: "Below 5", value: "below-5" },
+  { display: "6-8", value: "6-8" },
+  { display: "9-12", value: "9-12" },
+  { display: "12+", value: "12+" },
+];
+
+/** Map a display label back to the DB enum value. Returns null on unknown input. */
+export function ageDisplayToDb(display: string): Child["age_group"] | null {
+  return AGE_GROUP_OPTIONS.find((o) => o.display === display)?.value ?? null;
+}
+
 export interface Book {
   id: string;
   child_id: string;

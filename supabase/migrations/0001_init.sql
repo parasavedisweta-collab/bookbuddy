@@ -142,6 +142,20 @@ ALTER TABLE public.children         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.books            ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.borrow_requests  ENABLE ROW LEVEL SECURITY;
 
+-- Drop existing policies so CREATE POLICY below is re-runnable.
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN
+    SELECT policyname, tablename
+    FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename IN ('societies','parents','children','books','borrow_requests')
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', r.policyname, r.tablename);
+  END LOOP;
+END $$;
+
 -- ----- societies -----
 -- All authenticated users can read all societies (for dropdown search).
 -- Authenticated users can propose new societies.

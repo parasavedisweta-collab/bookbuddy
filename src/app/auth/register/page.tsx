@@ -5,27 +5,55 @@ import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import { isPhoneRegistered, findChildByPhone, setCurrentChildId } from "@/lib/userStore";
+import { isPhoneRegistered as isPhoneRegisteredInSupabase } from "@/lib/supabase/parents";
 
 export default function RegisterPage() {
   const router = useRouter();
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleContinue() {
+    setError(null);
     const digits = phone.replace(/\D/g, "");
     if (digits.length < 10) return;
     setLoading(true);
 
+    // 1) Fast path: recognised on this device (localStorage demo/migrated data)
+    //    — log them back in without hitting the network.
     if (isPhoneRegistered(phone)) {
-      // Returning user — log them back in
       const child = findChildByPhone(phone);
       if (child) setCurrentChildId(child.id);
       router.push("/");
-    } else {
-      // New user — remember phone, move to child setup
-      localStorage.setItem("bb_parent_phone", phone);
-      router.push("/auth/child-setup");
+      setLoading(false);
+      return;
     }
+
+    // 2) Cross-device guard: if the phone is registered to some OTHER
+    //    anon auth.uid() in Supabase, block. Path A anonymous auth
+    //    can't re-authenticate them onto this device — surfacing the
+    //    conflict beats failing with a UNIQUE violation at the end of
+    //    child-setup.
+    try {
+      const takenElsewhere = await isPhoneRegisteredInSupabase(digits);
+      if (takenElsewhere) {
+        setError(
+          "This number is already registered on another device. " +
+            "Cross-device sign-in isn't live yet — please contact support."
+        );
+        setLoading(false);
+        return;
+      }
+    } catch (e) {
+      // Lookup failure: fall through and let child-setup's INSERT catch
+      // a real collision. We still proceed so users aren't blocked by
+      // a flaky network read.
+      console.warn("[register] phone lookup failed, continuing:", e);
+    }
+
+    // 3) New user — stash phone for child-setup, continue.
+    localStorage.setItem("bb_parent_phone", phone);
+    router.push("/auth/child-setup");
     setLoading(false);
   }
 
@@ -80,6 +108,11 @@ export default function RegisterPage() {
             {loading ? "Continuing..." : "Continue"}
             <span className="material-symbols-outlined">arrow_forward</span>
           </Button>
+          {error && (
+            <p className="text-sm text-error font-medium bg-error-container/40 rounded-lg px-4 py-3 leading-snug">
+              {error}
+            </p>
+          )}
         </div>
 
         <div className="flex items-center gap-4 bg-surface-container-low p-5 rounded-lg">
