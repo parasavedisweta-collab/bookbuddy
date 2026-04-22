@@ -264,6 +264,13 @@ export default function ShelfPage() {
         if (cancelled) return;
         setSupabaseBooks(sbBooks);
         setMySupabaseChildIds(new Set(childIds));
+        // See matching note in home page — remove once stable.
+        console.debug(
+          "[shelf] load: childIds =",
+          childIds,
+          "books =",
+          sbBooks.length
+        );
       } catch (err) {
         console.error("[shelf] supabase load failed:", err);
       }
@@ -272,10 +279,12 @@ export default function ShelfPage() {
     const onChange = () => loadSupabase();
     window.addEventListener("bb_user_change", onChange);
     window.addEventListener("bb_books_change", onChange);
+    window.addEventListener("bb_supabase_auth", onChange);
     return () => {
       cancelled = true;
       window.removeEventListener("bb_user_change", onChange);
       window.removeEventListener("bb_books_change", onChange);
+      window.removeEventListener("bb_supabase_auth", onChange);
     };
   }, []);
 

@@ -56,12 +56,25 @@ export default function HomePage() {
         ]);
         if (cancelled) return;
         setMySupabaseChildIds(new Set(myChildren.map((c) => c.id)));
+        // Verbose telemetry during migration — plain English so a
+        // screenshot of the console immediately shows the failure mode.
+        // Remove once the read path is stable.
+        console.debug(
+          "[home] feed load: societyId =",
+          sid,
+          "myChildren =",
+          myChildren.map((c) => c.id)
+        );
         if (!sid) {
           setSupabaseFeed([]);
+          console.debug(
+            "[home] no society for current parent — either the session is a fresh anon uid without a parent row, or registration never completed. Feed stays empty."
+          );
           return;
         }
         const books = await fetchSocietyFeed(sid);
         if (!cancelled) setSupabaseFeed(books);
+        console.debug("[home] fetched", books.length, "supabase feed books");
       } catch (err) {
         console.error("[home] supabase feed load failed:", err);
       }
@@ -69,13 +82,17 @@ export default function HomePage() {
     loadSupabase();
     // Reload when the user or their local book state changes — covers
     // registration completing mid-session and new dual-written books.
+    // bb_supabase_auth fires from SupabaseAuthBootstrap once the anon
+    // session is ready, so pages that rendered pre-session refill.
     const onChange = () => loadSupabase();
     window.addEventListener("bb_user_change", onChange);
     window.addEventListener("bb_books_change", onChange);
+    window.addEventListener("bb_supabase_auth", onChange);
     return () => {
       cancelled = true;
       window.removeEventListener("bb_user_change", onChange);
       window.removeEventListener("bb_books_change", onChange);
+      window.removeEventListener("bb_supabase_auth", onChange);
     };
   }, []);
 
