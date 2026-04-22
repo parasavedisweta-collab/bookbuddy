@@ -13,6 +13,8 @@ import {
 import { lookupBook, extractBookInfoFromOcrLLM, inferBookDetails, identifyBookFromImage } from "@/lib/bookLookup";
 import { GENRES, AGE_RANGES, type Genre } from "@/lib/types";
 import { saveListedBook } from "@/lib/userStore";
+import { createBook } from "@/lib/supabase/books";
+import { listChildrenForCurrentParent } from "@/lib/supabase/children";
 
 type Step = "scan" | "details" | "confirm";
 /** How much to trust the auto-filled metadata. `high` is not shown in UI. */
@@ -425,7 +427,10 @@ export default function ListBookPage() {
     setStep("details");
   }
 
-  function handleConfirm() {
+  async function handleConfirm() {
+    // Legacy localStorage write — keeps shelf/home feed functional while
+    // those reads still come from localStorage. Remove once both are on
+    // Supabase.
     saveListedBook({
       title,
       author,
@@ -437,6 +442,52 @@ export default function ListBookPage() {
       userPhotoUrl: userPhotoBase64,
       selectedCover,
     });
+
+    // Supabase dual-write. Fail-open: a network/RLS error is logged but
+    // doesn't block the "Listed!" confirmation — local data is still
+    // authoritative for the UI right now. Admins can reconcile by
+    // comparing localStorage exports to the books table.
+    try {
+      const children = await listChildrenForCurrentParent();
+      const child = children[0];
+      if (!child) {
+        console.warn(
+          "[book-list] no Supabase child for current parent; skipping Supabase book insert. " +
+            "User is likely on legacy localStorage-only data."
+        );
+      } else {
+        // Base64 user photos aren't suitable for text-column storage; we
+        // persist cover_source='user' with a null cover_url and rely on
+        // localStorage for the image until Supabase Storage upload is wired.
+        const coverSource: "api" | "user" | null =
+          selectedCover === "api"
+            ? "api"
+            : selectedCover === "user_photo"
+              ? "user"
+              : null;
+        const coverUrl = coverSource === "api" ? apiCoverUrl : null;
+
+        const book = await createBook({
+          child_id: child.id,
+          title,
+          author,
+          description: summary,
+          category: genre,
+          cover_url: coverUrl,
+          cover_source: coverSource,
+          metadata: {
+            series: series || null,
+            age_range: ageRange || null,
+          },
+        });
+        if (!book) {
+          console.warn("[book-list] Supabase createBook returned null");
+        }
+      }
+    } catch (err) {
+      console.error("[book-list] Supabase write failed:", err);
+    }
+
     setStep("confirm");
   }
 
