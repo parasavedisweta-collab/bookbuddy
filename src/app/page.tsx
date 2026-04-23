@@ -56,36 +56,15 @@ export default function HomePage() {
         ]);
         if (cancelled) return;
         setMySupabaseChildIds(new Set(myChildren.map((c) => c.id)));
-        // Verbose telemetry during migration — plain English so a
-        // screenshot of the console immediately shows the failure mode.
-        // Remove once the read path is stable.
-        console.debug(
-          "[home] feed load: societyId =",
-          sid,
-          "myChildren =",
-          myChildren.map((c) => c.id)
-        );
         if (!sid) {
+          // Unregistered session — no society to scope to. Feed stays
+          // whatever localStorage hands us (demo data for dev users,
+          // nothing for a fresh anon).
           setSupabaseFeed([]);
-          console.debug(
-            "[home] no society for current parent — either the session is a fresh anon uid without a parent row, or registration never completed. Feed stays empty."
-          );
           return;
         }
         const books = await fetchSocietyFeed(sid);
         if (!cancelled) setSupabaseFeed(books);
-        console.debug(
-          "[home] fetched",
-          books.length,
-          "supabase feed books:",
-          books.map((b) => ({
-            id: b.id,
-            title: b.title,
-            child_id: b.child_id,
-            society_id: b.society_id,
-            status: b.status,
-          }))
-        );
       } catch (err) {
         console.error("[home] supabase feed load failed:", err);
       }
