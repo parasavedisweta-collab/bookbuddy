@@ -9,6 +9,7 @@ import {
   resolveCurrentSocietyId,
 } from "@/lib/supabase/feed";
 import { listChildrenForCurrentParent } from "@/lib/supabase/children";
+import { fetchMyRequests } from "@/lib/supabase/requests";
 import type { Genre, Book, BorrowRequest } from "@/lib/types";
 
 export default function HomePage() {
@@ -24,6 +25,11 @@ export default function HomePage() {
   const [mySupabaseChildIds, setMySupabaseChildIds] = useState<Set<string>>(
     () => new Set()
   );
+  // Supabase-backed requests (both borrower + lister side via RLS). Used
+  // ONLY to extend myShelfBookIds so a book already requested on another
+  // device disappears from this device's feed. The home feed never renders
+  // request cards itself — that's the shelf's job.
+  const [supabaseRequests, setSupabaseRequests] = useState<BorrowRequest[]>([]);
 
   useEffect(() => {
     const refresh = () => {
@@ -86,13 +92,48 @@ export default function HomePage() {
     };
   }, []);
 
+  // Pull Supabase-backed requests so a book requested on another device
+  // stays hidden from this device's feed. Separate effect from the feed
+  // load above so a transient requests-fetch error doesn't blank the grid.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRequests() {
+      try {
+        const reqs = await fetchMyRequests();
+        if (!cancelled) setSupabaseRequests(reqs);
+      } catch (err) {
+        console.error("[home] supabase requests load failed:", err);
+      }
+    }
+    loadRequests();
+    const onChange = () => loadRequests();
+    window.addEventListener("bb_user_change", onChange);
+    window.addEventListener("bb_requests_change", onChange);
+    window.addEventListener("bb_supabase_auth", onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("bb_user_change", onChange);
+      window.removeEventListener("bb_requests_change", onChange);
+      window.removeEventListener("bb_supabase_auth", onChange);
+    };
+  }, []);
+
   const filteredBooks = useMemo(() => {
-    // Books the current user is already interacting with (on their shelf)
+    // Books the current user is already interacting with (on their shelf).
+    // We merge local + Supabase requests, deduped by id, so a cross-device
+    // borrower's pending request (which only lives in Supabase) still hides
+    // the book here. "Mine" covers either the localStorage/demo child id or
+    // any Supabase child this parent owns.
+    const isMyBorrower = (id: string) =>
+      id === currentChildId || mySupabaseChildIds.has(id);
+    const mergedRequests = new Map<string, BorrowRequest>();
+    for (const r of allRequests) mergedRequests.set(r.id, r);
+    for (const r of supabaseRequests) mergedRequests.set(r.id, r);
     const myShelfBookIds = new Set(
-      allRequests
+      Array.from(mergedRequests.values())
         .filter(
           (r) =>
-            r.borrower_child_id === currentChildId &&
+            isMyBorrower(r.borrower_child_id) &&
             (r.status === "pending" || r.status === "approved" || r.status === "picked_up")
         )
         .map((r) => r.book_id)
@@ -151,6 +192,7 @@ export default function HomePage() {
     allBooks,
     supabaseFeed,
     allRequests,
+    supabaseRequests,
     currentChildId,
     societyId,
     mySupabaseChildIds,
