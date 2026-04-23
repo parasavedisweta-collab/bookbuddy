@@ -371,6 +371,36 @@ export function getAllBooks(): Book[] {
   }));
 }
 
+/**
+ * Rewrite a locally-listed book's id. Used by the book-list page after a
+ * successful Supabase insert so the local copy and the Supabase copy share
+ * the same id — otherwise the shelf/home merge sees them as two different
+ * books and shows the card twice (one with the base64 cover from local,
+ * one with the null cover from Supabase).
+ *
+ * No-op if no local book with `oldId` exists. Also rewrites the
+ * `bb_removed_books` set so a deletion that has already happened survives
+ * the renaming.
+ */
+export function replaceLocalBookId(oldId: string, newId: string) {
+  if (typeof window === "undefined" || oldId === newId) return;
+  const local = readLocalBooks();
+  const idx = local.findIndex((b) => b.id === oldId);
+  if (idx < 0) return;
+  local[idx] = { ...local[idx], id: newId };
+  localStorage.setItem(BOOKS_KEY, JSON.stringify(local));
+
+  // Preserve removed-state across the rename.
+  const removed = readRemovedIds();
+  if (removed.has(oldId)) {
+    removed.delete(oldId);
+    removed.add(newId);
+    localStorage.setItem(REMOVED_KEY, JSON.stringify([...removed]));
+  }
+
+  window.dispatchEvent(new Event("bb_books_change"));
+}
+
 /** Remove a book from the library (works for both demo and locally listed). */
 export function removeListedBook(bookId: string) {
   const removed = readRemovedIds();

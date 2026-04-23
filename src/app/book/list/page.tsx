@@ -12,7 +12,7 @@ import {
 } from "@/lib/ocr";
 import { lookupBook, extractBookInfoFromOcrLLM, inferBookDetails, identifyBookFromImage } from "@/lib/bookLookup";
 import { GENRES, AGE_RANGES, type Genre } from "@/lib/types";
-import { saveListedBook } from "@/lib/userStore";
+import { saveListedBook, replaceLocalBookId } from "@/lib/userStore";
 import { createBook } from "@/lib/supabase/books";
 import { listChildrenForCurrentParent } from "@/lib/supabase/children";
 
@@ -431,7 +431,7 @@ export default function ListBookPage() {
     // Legacy localStorage write — keeps shelf/home feed functional while
     // those reads still come from localStorage. Remove once both are on
     // Supabase.
-    saveListedBook({
+    const localBook = saveListedBook({
       title,
       author,
       series,
@@ -483,11 +483,16 @@ export default function ListBookPage() {
         if (!book) {
           console.warn("[book-list] Supabase createBook returned null");
         } else {
+          // Re-key the local copy to the Supabase UUID so the shelf/home
+          // merge treats them as a single book. Without this the user
+          // sees one card for the localStorage id (with the base64 cover
+          // preserved) and a second empty card for the Supabase UUID
+          // (cover_url = null until Storage upload is wired).
+          if (localBook?.id) replaceLocalBookId(localBook.id, book.id);
           // `saveListedBook` above already fired bb_books_change, but that
           // fired synchronously before this async insert completed — so the
           // Supabase-backed feed effects missed the new row. Fire again so
-          // the home/shelf re-fetch and the UUID-keyed row replaces the
-          // local placeholder on the next render.
+          // the home/shelf re-fetch pick up the UUID-keyed row.
           window.dispatchEvent(new Event("bb_books_change"));
         }
       }
@@ -558,11 +563,17 @@ export default function ListBookPage() {
             )}
           </button>
 
+          {/*
+            No `capture` attribute: with it set to "environment", iOS
+            Safari in particular opens the camera directly and hides
+            the "Photo Library" option from the OS picker. Leaving it
+            off lets the browser show a sheet with both camera and
+            gallery — which matches the "Take a photo or upload" copy.
+          */}
           <input
             ref={fileInputRef}
             type="file"
             accept="image/jpeg,image/png,image/webp,image/avif,image/heic,image/heif"
-            capture="environment"
             onChange={handleFileSelect}
             className="hidden"
           />
