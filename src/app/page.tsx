@@ -74,7 +74,18 @@ export default function HomePage() {
         }
         const books = await fetchSocietyFeed(sid);
         if (!cancelled) setSupabaseFeed(books);
-        console.debug("[home] fetched", books.length, "supabase feed books");
+        console.debug(
+          "[home] fetched",
+          books.length,
+          "supabase feed books:",
+          books.map((b) => ({
+            id: b.id,
+            title: b.title,
+            child_id: b.child_id,
+            society_id: b.society_id,
+            status: b.status,
+          }))
+        );
       } catch (err) {
         console.error("[home] supabase feed load failed:", err);
       }
