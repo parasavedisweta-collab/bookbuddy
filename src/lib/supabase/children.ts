@@ -16,7 +16,14 @@
 import { getSupabase } from "./client";
 import type { Child } from "../types";
 
-/** Row shape matching public.children. */
+/**
+ * Row shape matching public.children.
+ *
+ * `society_id` is denormalised from parents.society_id (migration 0003)
+ * and kept in sync by triggers — the app layer never writes to it directly.
+ * It's there so the home feed can join books → children by society without
+ * going through parents (which is RLS-restricted to the current user).
+ */
 export interface DbChild {
   id: string;
   parent_id: string;
@@ -24,11 +31,12 @@ export interface DbChild {
   emoji: string | null;
   age_group: Child["age_group"];
   bookbuddy_id: string;
+  society_id: string;
   created_at: string;
 }
 
 const COLUMNS =
-  "id, parent_id, name, emoji, age_group, bookbuddy_id, created_at" as const;
+  "id, parent_id, name, emoji, age_group, bookbuddy_id, society_id, created_at" as const;
 
 /**
  * Generate a short, shareable code like "BB-K3F9Q".

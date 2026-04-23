@@ -117,7 +117,9 @@ export async function listBooksForChild(childId: string): Promise<DbBook[]> {
 
 /**
  * Book row plus the minimum child/parent context needed by the home feed
- * card: whose child listed it, which society they're in.
+ * card: whose child listed it, which society they're in. `society_id` is
+ * denormalised onto children (migration 0003) so the query doesn't have
+ * to cross the parents RLS boundary to resolve it.
  */
 export interface DbBookWithListerContext extends DbBook {
   child: {
@@ -125,20 +127,19 @@ export interface DbBookWithListerContext extends DbBook {
     name: string;
     emoji: string | null;
     age_group: string;
-    parent: {
-      id: string;
-      society_id: string | null;
-    };
+    society_id: string;
+    parent_id: string;
   };
 }
 
 /**
- * Fetch all non-removed books whose lister's parent belongs to the given
- * society. Powers the home feed.
+ * Fetch all non-removed books whose lister belongs to the given society.
+ * Powers the home feed.
  *
- * Implementation: PostgREST embedded resource with !inner (INNER JOIN),
- * then filter on the embedded society_id. If this syntax breaks in a
- * future SDK version we can swap to a SECURITY INVOKER view or an RPC.
+ * Implementation: join books → children!inner only. children.RLS is
+ * "any authenticated can SELECT", so the INNER JOIN doesn't silently
+ * drop rows listed by other families (which is what happened when we
+ * used to join through parents — see migration 0003 for the post-mortem).
  */
 export async function listBooksForSociety(
   societyId: string
@@ -150,11 +151,10 @@ export async function listBooksForSociety(
     .select(
       `${COLUMNS},
        child:children!inner(
-         id, name, emoji, age_group,
-         parent:parents!inner(id, society_id)
+         id, name, emoji, age_group, society_id, parent_id
        )`
     )
-    .eq("child.parent.society_id", societyId)
+    .eq("child.society_id", societyId)
     .neq("status", "removed")
     .order("listed_at", { ascending: false });
 
