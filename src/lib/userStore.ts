@@ -332,6 +332,23 @@ export function createBorrowRequest(bookId: string, borrowerChildId: DemoChildId
   return req;
 }
 
+/**
+ * Rewrite a locally-created borrow request's id. Mirrors replaceLocalBookId:
+ * after a successful Supabase dual-write we rename the local row so the two
+ * sources share one id and the shelf's dedup-by-id merge doesn't render the
+ * same request twice (one "br_123" local, one UUID from Supabase).
+ *
+ * No-op if no local request with `oldId` exists or the id is already aligned.
+ */
+export function replaceLocalRequestId(oldId: string, newId: string) {
+  if (typeof window === "undefined" || oldId === newId) return;
+  const local = readLocalRequests();
+  const idx = local.findIndex((r) => r.id === oldId);
+  if (idx < 0) return;
+  local[idx] = { ...local[idx], id: newId };
+  writeLocalRequests(local);
+}
+
 /* ── Listed books ─────────────────────────────────────────── */
 
 function readLocalBooks(): Book[] {

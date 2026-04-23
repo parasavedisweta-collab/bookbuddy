@@ -12,8 +12,33 @@ import {
 } from "@/lib/userStore";
 import { fetchMyShelfBooks } from "@/lib/supabase/feed";
 import { updateBookStatus } from "@/lib/supabase/books";
+import {
+  fetchMyRequests,
+  updateRequestStatus as updateSupabaseRequestStatus,
+} from "@/lib/supabase/requests";
 import { daysSince, relativeTime, whatsappLink, phoneLink } from "@/lib/helpers";
-import type { BorrowRequest, Book } from "@/lib/types";
+import type { BorrowRequest, Book, BorrowStatus } from "@/lib/types";
+
+/** UUID regex — gates "also mirror this transition to Supabase" branches. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Wrap a local updateRequestStatus with a mirrored Supabase update when the
+ * request id looks like a UUID. Local fires first so the UI advances
+ * immediately; the Supabase call runs async and the failure catch is
+ * deliberately silent past the console log — a failed remote update isn't
+ * worth bouncing the user out of an advanced state locally.
+ */
+async function transitionRequest(id: string, status: BorrowStatus) {
+  updateRequestStatus(id, status);
+  if (UUID_RE.test(id)) {
+    try {
+      await updateSupabaseRequestStatus(id, status);
+    } catch (err) {
+      console.error("[shelf] supabase request transition failed:", err);
+    }
+  }
+}
 import Button from "@/components/ui/Button";
 import WhatsAppIcon from "@/components/ui/WhatsAppIcon";
 
@@ -116,18 +141,18 @@ function LendingCard({ req, onRefresh }: { req: BorrowRequest; onRefresh: () => 
   if (!book) return null;
   const isPending = req.status === "pending";
 
-  function approve() {
-    updateRequestStatus(req.id, "approved");
+  async function approve() {
+    await transitionRequest(req.id, "approved");
     onRefresh();
   }
 
-  function decline() {
-    updateRequestStatus(req.id, "declined");
+  async function decline() {
+    await transitionRequest(req.id, "declined");
     onRefresh();
   }
 
-  function markReturned() {
-    updateRequestStatus(req.id, "returned");
+  async function markReturned() {
+    await transitionRequest(req.id, "returned");
     onRefresh();
   }
 
@@ -234,6 +259,10 @@ export default function ShelfPage() {
   const [mySupabaseChildIds, setMySupabaseChildIds] = useState<Set<string>>(
     () => new Set()
   );
+  // Supabase-backed requests — both sides of the transaction, fetched via
+  // RLS (caller is the borrower's or lister's parent). Merged with local
+  // requests below so a request created on a different device still shows.
+  const [supabaseRequests, setSupabaseRequests] = useState<BorrowRequest[]>([]);
 
   const refresh = useCallback(() => {
     setChildId(getCurrentChildId());
@@ -281,27 +310,67 @@ export default function ShelfPage() {
     };
   }, []);
 
+  // Pull Supabase-backed requests (borrower or lister side). Runs parallel
+  // to the books effect above. `bb_requests_change` fires on every local
+  // transition so the remote copy stays fresh after the dual-write settles,
+  // and `bb_supabase_auth` covers the first-mount race where the anon
+  // session isn't ready yet.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRequests() {
+      try {
+        const reqs = await fetchMyRequests();
+        if (cancelled) return;
+        setSupabaseRequests(reqs);
+      } catch (err) {
+        console.error("[shelf] supabase requests load failed:", err);
+      }
+    }
+    loadRequests();
+    const onChange = () => loadRequests();
+    window.addEventListener("bb_user_change", onChange);
+    window.addEventListener("bb_requests_change", onChange);
+    window.addEventListener("bb_supabase_auth", onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("bb_user_change", onChange);
+      window.removeEventListener("bb_requests_change", onChange);
+      window.removeEventListener("bb_supabase_auth", onChange);
+    };
+  }, []);
+
   // A book/request belongs to "me" if its child_id matches the localStorage
   // demo/registered child OR any of my Supabase children (the IDs differ
   // between stores during the dual-write migration).
   const isMyChild = (id: string) => id === childId || mySupabaseChildIds.has(id);
 
+  // Merge local + Supabase requests, deduping by id. Supabase wins on a
+  // collision because the dual-write re-keys the local row to the Supabase
+  // UUID (see replaceLocalRequestId), so post-migration the same id carries
+  // the authoritative joined book/child context from Supabase.
+  const mergedRequests = (() => {
+    const byId = new Map<string, BorrowRequest>();
+    for (const r of requests) byId.set(r.id, r);
+    for (const r of supabaseRequests) byId.set(r.id, r);
+    return Array.from(byId.values());
+  })();
+
   // Section 1: Books I requested (as borrower, pending/declined)
-  const myRequests = requests.filter(
+  const myRequests = mergedRequests.filter(
     (r) =>
       isMyChild(r.borrower_child_id) &&
       (r.status === "pending" || r.status === "declined")
   );
 
   // Section 2: Books I'm reading (as borrower, approved/picked_up)
-  const myReading = requests.filter(
+  const myReading = mergedRequests.filter(
     (r) =>
       isMyChild(r.borrower_child_id) &&
       (r.status === "approved" || r.status === "picked_up")
   );
 
   // Section 3: Books I'm lending (as lister, active)
-  const myLending = requests.filter(
+  const myLending = mergedRequests.filter(
     (r) =>
       isMyChild(r.lister_child_id) &&
       (r.status === "pending" || r.status === "approved" || r.status === "picked_up")

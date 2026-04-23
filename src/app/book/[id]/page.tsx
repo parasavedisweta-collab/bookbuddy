@@ -2,11 +2,24 @@
 
 import { use, useMemo, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { getCurrentChildId, createBorrowRequest, getAllRequests, getAllBooks, removeListedBook, type DemoChildId } from "@/lib/userStore";
+import { getCurrentChildId, createBorrowRequest, getAllRequests, getAllBooks, removeListedBook, replaceLocalRequestId, type DemoChildId } from "@/lib/userStore";
+import {
+  createBorrowRequest as createSupabaseBorrowRequest,
+  findActiveRequest,
+} from "@/lib/supabase/requests";
+import { listChildrenForCurrentParent } from "@/lib/supabase/children";
 import Link from "next/link";
 import Button from "@/components/ui/Button";
 import WhatsAppIcon from "@/components/ui/WhatsAppIcon";
 import { whatsappLink, phoneLink } from "@/lib/helpers";
+
+/**
+ * Books and children created through the Supabase write path use UUIDs
+ * (gen_random_uuid()). Local-only/demo rows use "book_…" / "c1". This
+ * regex gates the dual-write: if the book id isn't a UUID there's no
+ * matching Supabase row to request against, and RLS would reject.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default function BookDetailPage({
   params,
@@ -43,6 +56,30 @@ export default function BookDetailPage({
     setRequestSent(!!existingRequest);
   }, [existingRequest]);
 
+  // Supabase-side gate: a user who requested this book from another device
+  // shouldn't be offered the Request button again. Runs in addition to the
+  // localStorage check — either source flips the button off.
+  useEffect(() => {
+    let cancelled = false;
+    if (!book || !UUID_RE.test(book.id)) return;
+    (async () => {
+      try {
+        const myChildren = await listChildrenForCurrentParent();
+        if (cancelled || myChildren.length === 0) return;
+        const active = await findActiveRequest({
+          bookId: book.id,
+          borrowerChildId: myChildren[0].id,
+        });
+        if (!cancelled && active) setRequestSent(true);
+      } catch (err) {
+        console.error("[book-detail] supabase active-request lookup failed:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [book]);
+
   if (!book) {
     return (
       <main className="flex-1 flex items-center justify-center">
@@ -64,9 +101,36 @@ export default function BookDetailPage({
     [currentChildId]
   );
 
-  function handleRequest() {
-    createBorrowRequest(id, currentChildId);
+  async function handleRequest() {
+    // 1. Local write first: keeps demo/unregistered users on the shelf
+    //    immediately, and guarantees we have a row to re-key if the
+    //    Supabase write succeeds.
+    const localReq = createBorrowRequest(id, currentChildId);
     setRequestSent(true);
+
+    // 2. Attempt the Supabase dual-write. Only runs if both the book
+    //    and the current parent have real Supabase identities — i.e.
+    //    the book id is a UUID AND the caller has a Supabase child row.
+    //    Registered users usually have exactly one child; we pick the
+    //    first. If multiple children are ever supported, this needs to
+    //    track which child the user has currently selected.
+    if (!book || !UUID_RE.test(book.id) || !UUID_RE.test(book.child_id)) return;
+    try {
+      const myChildren = await listChildrenForCurrentParent();
+      if (myChildren.length === 0) return;
+      const borrowerChildId = myChildren[0].id;
+      const dbReq = await createSupabaseBorrowRequest({
+        bookId: book.id,
+        borrowerChildId,
+        listerChildId: book.child_id,
+      });
+      if (dbReq && localReq) {
+        // Align ids so the shelf/home merge dedups the two copies.
+        replaceLocalRequestId(localReq.id, dbReq.id);
+      }
+    } catch (err) {
+      console.error("[book-detail] supabase request insert failed:", err);
+    }
   }
 
   return (
