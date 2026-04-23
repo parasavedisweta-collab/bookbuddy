@@ -264,13 +264,6 @@ export default function ShelfPage() {
         if (cancelled) return;
         setSupabaseBooks(sbBooks);
         setMySupabaseChildIds(new Set(childIds));
-        // See matching note in home page — remove once stable.
-        console.debug(
-          "[shelf] load: childIds =",
-          childIds,
-          "books =",
-          sbBooks.length
-        );
       } catch (err) {
         console.error("[shelf] supabase load failed:", err);
       }

@@ -29,7 +29,6 @@ export default function SupabaseAuthBootstrap() {
         const uid = await ensureAnonymousSession();
         if (cancelled) return;
         if (uid) {
-          console.debug("[supabase] anon session ready, uid =", uid);
           // Let page-level effects (home feed, shelf) know a session is
           // now available. Without this, effects that ran before the
           // session existed stay with an empty feed until the next
