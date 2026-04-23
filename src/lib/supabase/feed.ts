@@ -42,9 +42,9 @@ function mapCoverSource(s: DbBook["cover_source"]): Book["cover_source"] {
 }
 
 /**
- * Map a home-feed row (book + nested child + nested parent) to app `Book`.
- * society_id is lifted from the nested join; callers that only need a society
- * sanity-check can compare against the input societyId.
+ * Map a home-feed row (book + nested child) to app `Book`. society_id now
+ * comes directly from children (denormalised in migration 0003); the old
+ * books→children→parents join path was blocked by parents.RLS and is gone.
  */
 export function mapFeedRowToBook(row: DbBookWithListerContext): Book {
   const meta = (row.metadata ?? {}) as Record<string, unknown>;
@@ -54,7 +54,7 @@ export function mapFeedRowToBook(row: DbBookWithListerContext): Book {
   return {
     id: row.id,
     child_id: row.child.id,
-    society_id: row.child.parent.society_id ?? "",
+    society_id: row.child.society_id,
     title: row.title,
     author: row.author,
     // `category` is a free-text string in the DB; the app's Genre is a union.
@@ -68,7 +68,7 @@ export function mapFeedRowToBook(row: DbBookWithListerContext): Book {
     listed_at: row.listed_at,
     child: {
       id: row.child.id,
-      parent_id: row.child.parent.id,
+      parent_id: row.child.parent_id,
       name: row.child.name,
       age_group: row.child.age_group as Child["age_group"],
       bookbuddy_id: "",
