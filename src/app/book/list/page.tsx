@@ -11,7 +11,7 @@ import {
   buildLookupQuery,
 } from "@/lib/ocr";
 import { lookupBook, extractBookInfoFromOcrLLM, inferBookDetails, identifyBookFromImage } from "@/lib/bookLookup";
-import { GENRES, AGE_RANGES, type Genre } from "@/lib/types";
+import { GENRES, AGE_RANGES, type Genre, type Book } from "@/lib/types";
 import { saveListedBook, replaceLocalBookId } from "@/lib/userStore";
 import { createBook } from "@/lib/supabase/books";
 import { listChildrenForCurrentParent } from "@/lib/supabase/children";
@@ -72,6 +72,14 @@ export default function ListBookPage() {
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [scanError, setScanError] = useState<string | null>(null);
+  // `listing` drives the List-This-Book button's own spinner/disabled state.
+  // Separate from `loading` (which is for the scan pipeline) so an in-flight
+  // scan on another step can never block the final save.
+  const [listing, setListing] = useState(false);
+  // Surfaced under the List button when both local + Supabase writes fail —
+  // without this, any silent throw in handleConfirm looked like "the button
+  // does nothing" to the user (see: phone localStorage quota exhaustion).
+  const [listError, setListError] = useState<string | null>(null);
 
   // Scan state
   const [userPhoto, setUserPhoto] = useState<string | null>(null);
@@ -443,25 +451,68 @@ export default function ListBookPage() {
   }
 
   async function handleConfirm() {
-    // Legacy localStorage write — keeps shelf/home feed functional while
-    // those reads still come from localStorage. Remove once both are on
-    // Supabase.
-    const localBook = saveListedBook({
-      title,
-      author,
-      series,
-      genre,
-      ageRange,
-      summary,
-      coverUrl: apiCoverUrl,
-      userPhotoUrl: userPhotoBase64,
-      selectedCover,
-    });
+    if (listing) return; // re-entrancy guard
+    setListing(true);
+    setListError(null);
 
-    // Supabase dual-write. Fail-open: a network/RLS error is logged but
-    // doesn't block the "Listed!" confirmation — local data is still
-    // authoritative for the UI right now. Admins can reconcile by
-    // comparing localStorage exports to the books table.
+    // Two independent writes. EITHER one succeeding is enough to advance
+    // to the confirmation screen — we just need the book to exist somewhere
+    // the user can see it on their shelf.
+    //
+    // Why wrapped separately:
+    //   • `saveListedBook` embeds the photo base64 and can throw
+    //     `QuotaExceededError` on Safari once localStorage (~5 MB) fills up
+    //     after a few phone listings. Previously that threw synchronously
+    //     out of the whole handler — `setStep("confirm")` never ran and the
+    //     button looked dead on second/third listings.
+    //   • The Supabase path can fail on flaky networks / RLS / missing
+    //     children. It used to succeed-or-log, but the surrounding local
+    //     throw meant neither path advanced the UI on quota exhaustion.
+    let localBook: Book | null = null;
+    let localErr: unknown = null;
+    try {
+      localBook = saveListedBook({
+        title,
+        author,
+        series,
+        genre,
+        ageRange,
+        summary,
+        coverUrl: apiCoverUrl,
+        userPhotoUrl: userPhotoBase64,
+        selectedCover,
+      });
+    } catch (err) {
+      localErr = err;
+      console.error("[book-list] local save failed:", err);
+      // Quota is the dominant real-world cause; retry once without the
+      // photo. User loses the preview but keeps the book — far better than
+      // being silently blocked. Once the cover is in Supabase Storage this
+      // retry path goes away.
+      try {
+        localBook = saveListedBook({
+          title,
+          author,
+          series,
+          genre,
+          ageRange,
+          summary,
+          coverUrl: apiCoverUrl,
+          userPhotoUrl: null,
+          selectedCover: selectedCover === "user_photo" && !apiCoverUrl
+            ? "user_photo" // keep source; just no image this run
+            : selectedCover,
+        });
+        localErr = null;
+      } catch (retryErr) {
+        console.error("[book-list] local save retry (no photo) failed:", retryErr);
+        localErr = retryErr;
+      }
+    }
+
+    // Supabase dual-write. See books.ts for the id/RLS model.
+    let supabaseBook: Awaited<ReturnType<typeof createBook>> | null = null;
+    let supabaseErr: unknown = null;
     try {
       const children = await listChildrenForCurrentParent();
       const child = children[0];
@@ -482,7 +533,7 @@ export default function ListBookPage() {
               : null;
         const coverUrl = coverSource === "api" ? apiCoverUrl : null;
 
-        const book = await createBook({
+        supabaseBook = await createBook({
           child_id: child.id,
           title,
           author,
@@ -495,26 +546,44 @@ export default function ListBookPage() {
             age_range: ageRange || null,
           },
         });
-        if (!book) {
+        if (!supabaseBook) {
           console.warn("[book-list] Supabase createBook returned null");
-        } else {
+        } else if (localBook?.id) {
           // Re-key the local copy to the Supabase UUID so the shelf/home
           // merge treats them as a single book. Without this the user
           // sees one card for the localStorage id (with the base64 cover
           // preserved) and a second empty card for the Supabase UUID
           // (cover_url = null until Storage upload is wired).
-          if (localBook?.id) replaceLocalBookId(localBook.id, book.id);
-          // `saveListedBook` above already fired bb_books_change, but that
-          // fired synchronously before this async insert completed — so the
-          // Supabase-backed feed effects missed the new row. Fire again so
-          // the home/shelf re-fetch pick up the UUID-keyed row.
+          replaceLocalBookId(localBook.id, supabaseBook.id);
+          // `saveListedBook` already fired bb_books_change synchronously,
+          // but that was before this async insert completed. Fire again so
+          // the Supabase-backed feed effects pick up the UUID-keyed row.
           window.dispatchEvent(new Event("bb_books_change"));
         }
       }
     } catch (err) {
+      supabaseErr = err;
       console.error("[book-list] Supabase write failed:", err);
     }
 
+    setListing(false);
+
+    if (!localBook && !supabaseBook) {
+      // Both writes failed — surface something actionable instead of the
+      // button just going quiet. The most likely cause today is a local
+      // quota exhaustion (localErr = QuotaExceededError) combined with the
+      // user being unregistered in Supabase (no child row → no insert).
+      const reason = (localErr as { name?: string } | null)?.name === "QuotaExceededError"
+        ? "This device's local storage is full. Try removing some listed books and try again."
+        : "Couldn't save this book. Check your connection and try again.";
+      setListError(reason);
+      // Intentionally don't advance — user has something to act on.
+      return;
+    }
+
+    // At least one write succeeded — show confirmation. Supabase being the
+    // authoritative cross-device store, a local-only save still counts as
+    // "listed" for this device in the dual-write window.
     setStep("confirm");
   }
 
@@ -856,18 +925,36 @@ export default function ListBookPage() {
             />
           </div>
 
-          <Button fullWidth onClick={handleConfirm} disabled={!title}>
-            <span
-              className="material-symbols-outlined"
-              style={{ fontVariationSettings: "'FILL' 1" }}
-            >
-              check_circle
-            </span>
-            List This Book
+          <Button fullWidth onClick={handleConfirm} disabled={!title || listing}>
+            {listing ? (
+              <>
+                <span className="w-4 h-4 border-2 border-on-primary border-t-transparent rounded-full animate-spin" />
+                Listing...
+              </>
+            ) : (
+              <>
+                <span
+                  className="material-symbols-outlined"
+                  style={{ fontVariationSettings: "'FILL' 1" }}
+                >
+                  check_circle
+                </span>
+                List This Book
+              </>
+            )}
           </Button>
-          <p className="text-center text-xs text-on-surface-variant">
-            Double-check details before listing
-          </p>
+          {listError ? (
+            <div className="bg-error-container/20 border border-error/30 rounded-xl p-3 flex gap-2 items-start">
+              <span className="material-symbols-outlined text-error text-lg shrink-0 mt-0.5">
+                error
+              </span>
+              <p className="text-sm text-on-surface flex-1">{listError}</p>
+            </div>
+          ) : (
+            <p className="text-center text-xs text-on-surface-variant">
+              Double-check details before listing
+            </p>
+          )}
         </div>
       )}
 
