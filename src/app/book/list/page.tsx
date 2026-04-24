@@ -252,7 +252,12 @@ export default function ListBookPage() {
         setScanError(
           "That doesn't look like a book cover. Try again with the front cover facing the camera."
         );
-        setUserPhoto(null);
+        // Keep the photo in state so the user can choose "Use this photo anyway"
+        // from the error UI and proceed to the details form. Phone uploads
+        // often fail OCR/vision (tilt, glare) even when the photo itself is
+        // a legitimate cover — taking it away at this point forces a retry
+        // loop that's impossible to escape if the device simply can't hit
+        // the confidence threshold.
         setLoading(false);
         return;
       }
@@ -260,7 +265,7 @@ export default function ListBookPage() {
       const validation = validateBookCover(ocrResult.text, ocrResult.confidence, ocrResult.lines);
       if (!validation.valid) {
         setScanError(validation.reason);
-        setUserPhoto(null);
+        // See above — keep the photo; the error UI offers an escape hatch.
         setLoading(false);
         return;
       }
@@ -584,14 +589,37 @@ export default function ListBookPage() {
               <span className="material-symbols-outlined text-error text-xl shrink-0 mt-0.5">
                 error
               </span>
-              <div>
+              <div className="flex-1">
                 <p className="text-sm font-medium text-on-surface">{scanError}</p>
-                <button
-                  onClick={() => { setScanError(null); fileInputRef.current?.click(); }}
-                  className="text-primary font-bold text-sm mt-2"
-                >
-                  Try another photo
-                </button>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+                  <button
+                    onClick={() => { setScanError(null); fileInputRef.current?.click(); }}
+                    className="text-primary font-bold text-sm"
+                  >
+                    Try another photo
+                  </button>
+                  {/* Escape hatch: when the photo is already captured, let
+                      the user bail out of the AI pipeline and fill in the
+                      details by hand. Only shown when a photo actually
+                      exists (either kind of failure preserves userPhoto). */}
+                  {userPhoto && (
+                    <button
+                      onClick={() => {
+                        setScanError(null);
+                        setApiCoverUrl(null);
+                        setSelectedCover("user_photo");
+                        setConfidence("low");
+                        setMetadataWarning(
+                          "We couldn't read this cover automatically. Please fill in the title, author and other details below."
+                        );
+                        setStep("details");
+                      }}
+                      className="text-on-surface-variant font-bold text-sm"
+                    >
+                      Use this photo anyway
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           )}
