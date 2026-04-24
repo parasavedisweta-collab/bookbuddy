@@ -28,6 +28,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * immediately; the Supabase call runs async and the failure catch is
  * deliberately silent past the console log — a failed remote update isn't
  * worth bouncing the user out of an advanced state locally.
+ *
+ * IMPORTANT: we dispatch `bb_requests_change` AFTER the Supabase call
+ * regardless of whether the local update wrote anything. A request created
+ * on another device exists only in Supabase, so the local update is a silent
+ * no-op on this device — without this explicit dispatch, the shelf's
+ * supabase-requests effect never re-fetches and the UI looks frozen until
+ * a hard reload. See loadRequests() below, which listens on this event.
  */
 async function transitionRequest(id: string, status: BorrowStatus) {
   updateRequestStatus(id, status);
@@ -37,6 +44,10 @@ async function transitionRequest(id: string, status: BorrowStatus) {
     } catch (err) {
       console.error("[shelf] supabase request transition failed:", err);
     }
+    // Fire even on failure: the UI should re-read authoritative state from
+    // Supabase either way. If the update succeeded it reflects the new
+    // status; if it failed, it reverts any optimistic local change.
+    window.dispatchEvent(new Event("bb_requests_change"));
   }
 }
 import Button from "@/components/ui/Button";
@@ -138,22 +149,26 @@ function BorrowedBookCard({ req }: { req: BorrowRequest }) {
 
 function LendingCard({ req, onRefresh }: { req: BorrowRequest; onRefresh: () => void }) {
   const book = req.book;
+  // Track which action is mid-flight so we can swap the label to a spinner
+  // and disable every button on the card. Without this the user taps
+  // Approve, the Supabase round-trip takes ~300ms, and during that window
+  // the card looks entirely unchanged — reads as a dead button.
+  const [busy, setBusy] = useState<"approve" | "decline" | "return" | null>(null);
   if (!book) return null;
   const isPending = req.status === "pending";
+  const disabled = busy !== null;
 
-  async function approve() {
-    await transitionRequest(req.id, "approved");
-    onRefresh();
-  }
-
-  async function decline() {
-    await transitionRequest(req.id, "declined");
-    onRefresh();
-  }
-
-  async function markReturned() {
-    await transitionRequest(req.id, "returned");
-    onRefresh();
+  async function runAction(
+    label: "approve" | "decline" | "return",
+    next: BorrowStatus
+  ) {
+    setBusy(label);
+    try {
+      await transitionRequest(req.id, next);
+      onRefresh();
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
@@ -173,24 +188,36 @@ function LendingCard({ req, onRefresh }: { req: BorrowRequest; onRefresh: () => 
         {isPending ? (
           <div className="flex gap-2 mt-2">
             <button
-              onClick={approve}
-              className="px-3 py-1.5 bg-primary text-on-primary rounded-full text-xs font-bold"
+              onClick={() => runAction("approve", "approved")}
+              disabled={disabled}
+              className="px-3 py-1.5 bg-primary text-on-primary rounded-full text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-60"
             >
-              Approve
+              {busy === "approve" && (
+                <span className="w-3 h-3 border-2 border-on-primary border-t-transparent rounded-full animate-spin" />
+              )}
+              {busy === "approve" ? "Approving..." : "Approve"}
             </button>
             <button
-              onClick={decline}
-              className="px-3 py-1.5 bg-surface-container-high text-on-surface-variant rounded-full text-xs font-bold"
+              onClick={() => runAction("decline", "declined")}
+              disabled={disabled}
+              className="px-3 py-1.5 bg-surface-container-high text-on-surface-variant rounded-full text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-60"
             >
-              Decline
+              {busy === "decline" && (
+                <span className="w-3 h-3 border-2 border-on-surface-variant border-t-transparent rounded-full animate-spin" />
+              )}
+              {busy === "decline" ? "Declining..." : "Decline"}
             </button>
           </div>
         ) : (
           <button
-            onClick={markReturned}
-            className="mt-2 px-3 py-1.5 bg-secondary-container text-on-secondary-container rounded-full text-xs font-bold"
+            onClick={() => runAction("return", "returned")}
+            disabled={disabled}
+            className="mt-2 px-3 py-1.5 bg-secondary-container text-on-secondary-container rounded-full text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-60"
           >
-            Mark as Returned
+            {busy === "return" && (
+              <span className="w-3 h-3 border-2 border-on-secondary-container border-t-transparent rounded-full animate-spin" />
+            )}
+            {busy === "return" ? "Marking..." : "Mark as Returned"}
           </button>
         )}
       </div>
