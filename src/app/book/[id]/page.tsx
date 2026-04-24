@@ -8,6 +8,8 @@ import {
   findActiveRequest,
 } from "@/lib/supabase/requests";
 import { listChildrenForCurrentParent } from "@/lib/supabase/children";
+import { fetchBookById } from "@/lib/supabase/feed";
+import type { Book } from "@/lib/types";
 import Link from "next/link";
 import Button from "@/components/ui/Button";
 import WhatsAppIcon from "@/components/ui/WhatsAppIcon";
@@ -37,7 +39,56 @@ export default function BookDetailPage({
     return () => window.removeEventListener("bb_user_change", handler);
   }, []);
 
-  const book = useMemo(() => getAllBooks().find((b) => b.id === id), [id]);
+  // Book resolution is a 3-state lifecycle: "loading" (we haven't decided
+  // yet) → "found" (book is populated) → "not-found" (both sources checked,
+  // nothing matches). The loading state matters because localStorage resolves
+  // synchronously but the Supabase fallback is async — without it we'd flash
+  // "Book not found" for every book that lives only in Supabase.
+  const [book, setBook] = useState<Book | null>(null);
+  const [lookupState, setLookupState] =
+    useState<"loading" | "found" | "not-found">("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Try localStorage first (synchronous, covers demo data and books this
+    // user listed on this device).
+    const local = getAllBooks().find((b) => b.id === id);
+    if (local) {
+      setBook(local);
+      setLookupState("found");
+      return;
+    }
+
+    // Fall back to Supabase. The home feed merges Supabase books into the
+    // grid via society_id, so any id the user can click from there either
+    // exists in Supabase or is stale — we should find it almost always.
+    // Only UUIDs warrant the remote lookup; anything else is a dead demo id.
+    if (!UUID_RE.test(id)) {
+      setLookupState("not-found");
+      return;
+    }
+    setLookupState("loading");
+    fetchBookById(id)
+      .then((found) => {
+        if (cancelled) return;
+        if (found) {
+          setBook(found);
+          setLookupState("found");
+        } else {
+          setLookupState("not-found");
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("[book-detail] supabase lookup failed:", err);
+        setLookupState("not-found");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
 
   // Check if current user already has a pending/approved request for this book
   const existingRequest = useMemo(() => {
@@ -80,7 +131,20 @@ export default function BookDetailPage({
     };
   }, [book]);
 
-  if (!book) {
+  if (lookupState === "loading") {
+    return (
+      <main className="flex-1 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3 text-on-surface-variant">
+          <span className="material-symbols-outlined text-4xl animate-pulse">
+            menu_book
+          </span>
+          <p className="text-sm">Loading…</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (!book || lookupState === "not-found") {
     return (
       <main className="flex-1 flex items-center justify-center">
         <p className="text-on-surface-variant">Book not found</p>

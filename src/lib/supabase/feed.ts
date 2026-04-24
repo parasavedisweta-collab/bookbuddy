@@ -17,6 +17,7 @@
  */
 "use client";
 
+import { getSupabase } from "./client";
 import {
   listBooksForSociety,
   listBooksForChild,
@@ -136,6 +137,39 @@ export async function fetchSocietyFeed(societyId: string): Promise<Book[]> {
   if (!societyId) return [];
   const rows = await listBooksForSociety(societyId);
   return rows.map(mapFeedRowToBook);
+}
+
+/**
+ * Fetch a single book by id with the lister-child context the book-detail
+ * UI needs (name, emoji, society_id, etc.). Mirrors listBooksForSociety's
+ * inner-join pattern so this doesn't cross the parents-RLS boundary.
+ *
+ * Used as a fallback when a user opens a book they see in the feed but
+ * didn't list themselves — localStorage doesn't have it, so we resolve it
+ * against Supabase. Returns null if not found or on error.
+ */
+export async function fetchBookById(id: string): Promise<Book | null> {
+  if (!id) return null;
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("books")
+    .select(
+      `id, child_id, title, author, isbn, description, category,
+       cover_url, cover_source, status, listed_at, metadata,
+       child:children!inner(
+         id, name, emoji, age_group, society_id, parent_id
+       )`
+    )
+    .eq("id", id)
+    .neq("status", "removed")
+    .maybeSingle();
+
+  if (error) {
+    console.error("[feed] fetchBookById failed:", error);
+    return null;
+  }
+  if (!data) return null;
+  return mapFeedRowToBook(data as unknown as DbBookWithListerContext);
 }
 
 /**
