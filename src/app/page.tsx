@@ -12,6 +12,7 @@ import { listChildrenForCurrentParent, isAloneInSociety } from "@/lib/supabase/c
 import { getCurrentParent } from "@/lib/supabase/parents";
 import { fetchMyRequests } from "@/lib/supabase/requests";
 import ShareAppButton from "@/components/ShareAppButton";
+import NotificationBell from "@/components/NotificationBell";
 import type { Genre, Book, BorrowRequest } from "@/lib/types";
 
 export default function HomePage() {
@@ -275,9 +276,7 @@ export default function HomePage() {
               BookBuddy
             </span>
           </div>
-          <button className="p-2 text-on-surface-variant">
-            <span className="material-symbols-outlined">notifications</span>
-          </button>
+          <NotificationBell />
         </div>
 
         {/* Search */}
