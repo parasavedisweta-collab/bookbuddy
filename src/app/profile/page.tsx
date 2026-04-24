@@ -2,15 +2,30 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { getCurrentChildId, getAllBooks, getAllRequests, DEMO_CHILDREN, type DemoChildId } from "@/lib/userStore";
+import { useRouter } from "next/navigation";
+import {
+  getCurrentChildId,
+  getAllBooks,
+  getAllRequests,
+  DEMO_CHILDREN,
+  clearLocalUserData,
+  type DemoChildId,
+} from "@/lib/userStore";
+import { getSupabase } from "@/lib/supabase/client";
 import Button from "@/components/ui/Button";
 
 export default function ProfilePage() {
+  const router = useRouter();
   const [childId, setChildId] = useState<DemoChildId>("c1");
   const [childName, setChildName] = useState("Reader");
   const [societyName, setSocietyName] = useState("Sunshine Residency");
   const [totalListed, setTotalListed] = useState(0);
   const [totalLent, setTotalLent] = useState(0);
+  // Signing-out runs Supabase.signOut() + clears localStorage + navigates.
+  // We track the in-flight state so the button shows a spinner + disables —
+  // without it, double-taps could fire two signOut calls and the user has
+  // no feedback that anything is happening.
+  const [signingOut, setSigningOut] = useState(false);
 
   const refresh = useCallback(() => {
     const id = getCurrentChildId();
@@ -50,6 +65,37 @@ export default function ProfilePage() {
       window.removeEventListener("bb_requests_change", refresh);
     };
   }, [refresh]);
+
+  /**
+   * Sign out: end the Supabase session AND blank this device's localStorage.
+   *
+   * Order matters: localStorage first so any race-y effect that re-reads
+   * during the Supabase network round-trip sees an empty store. Then
+   * supabase.auth.signOut() tears down the session. We navigate to
+   * /auth/register because SupabaseAuthBootstrap will immediately mint a
+   * fresh anonymous session on the next mount — without an explicit push
+   * the user lands on /profile with mismatched identity.
+   *
+   * We do NOT await the supabase call blocking navigation: the
+   * local wipe + router push is the user-visible action. A transient
+   * network failure on signOut just leaves the stale session token on
+   * disk, which the next auth check will reconcile.
+   */
+  async function handleSignOut() {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      clearLocalUserData();
+      const supabase = getSupabase();
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error("[profile] sign-out failed:", err);
+    } finally {
+      // Whether or not signOut succeeded, the local state is blanked.
+      // Push to the register entry so the next screen is deterministic.
+      router.push("/auth/register");
+    }
+  }
 
   return (
     <main className="flex-1 w-full max-w-2xl mx-auto px-5 pb-28">
@@ -108,6 +154,23 @@ export default function ProfilePage() {
               List a new book
             </Button>
           </Link>
+          <button
+            onClick={handleSignOut}
+            disabled={signingOut}
+            className="w-full flex items-center justify-center gap-2 py-3 rounded-full bg-surface-container-high text-on-surface-variant font-bold text-sm disabled:opacity-60"
+          >
+            {signingOut ? (
+              <>
+                <span className="w-4 h-4 border-2 border-on-surface-variant border-t-transparent rounded-full animate-spin" />
+                Signing out...
+              </>
+            ) : (
+              <>
+                <span className="material-symbols-outlined text-lg">logout</span>
+                Sign out
+              </>
+            )}
+          </button>
         </div>
 
         {/* Info */}

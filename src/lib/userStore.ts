@@ -271,6 +271,46 @@ export function setCurrentChildId(id: DemoChildId) {
   window.dispatchEvent(new Event("bb_user_change"));
 }
 
+/**
+ * Wipe every user-scoped localStorage key on this device.
+ *
+ * Used by Sign Out (and any future "switch account" flow). The keys here
+ * are deliberately hard-coded in one place so we don't drift — any new
+ * user-scoped key must be added here too. Fires every change event so
+ * pages re-render against the cleared state in the same tick.
+ *
+ * Notes on what is / isn't cleared:
+ *   - Cleared: child id, registered children, listed books, borrow
+ *     requests, removed books, parent phone, onboarding child blob.
+ *   - NOT cleared: Supabase session — that's owned by the Supabase client
+ *     and the caller handles signOut() separately. Also nothing under a
+ *     non-`bb_` prefix (third-party libs).
+ *
+ * Supabase data is NOT touched: rows remain attached to the old parent
+ * via their child_id, but RLS makes them invisible to the freshly signed-
+ * in (or anonymous) user. That's the intended semantics — sign-out
+ * blanks the device, not the server.
+ */
+export function clearLocalUserData() {
+  if (typeof window === "undefined") return;
+  const keys = [
+    CHILD_KEY,
+    REQUEST_KEY,
+    BOOKS_KEY,
+    REMOVED_KEY,
+    REGISTERED_CHILDREN_KEY,
+    "bb_child",
+    "bb_parent_phone",
+  ];
+  for (const k of keys) localStorage.removeItem(k);
+  // Fire all downstream change events so any mounted page (bell, shelf,
+  // home) re-reads the now-empty store in this same tick.
+  window.dispatchEvent(new Event("bb_user_change"));
+  window.dispatchEvent(new Event("bb_books_change"));
+  window.dispatchEvent(new Event("bb_requests_change"));
+  window.dispatchEvent(new Event("bb_registered_change"));
+}
+
 /* ── Borrow requests ──────────────────────────────────────── */
 
 function readLocalRequests(): BorrowRequest[] {
