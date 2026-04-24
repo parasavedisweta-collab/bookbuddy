@@ -3,6 +3,7 @@ import { Be_Vietnam_Pro, Plus_Jakarta_Sans } from "next/font/google";
 import BottomNav from "@/components/BottomNav";
 import "./globals.css";
 import SupabaseAuthBootstrap from "@/components/SupabaseAuthBootstrap";
+import AddToHomeScreenPrompt from "@/components/AddToHomeScreenPrompt";
 
 const beVietnamPro = Be_Vietnam_Pro({
   subsets: ["latin"],
@@ -61,6 +62,7 @@ export default function RootLayout({
           </div>
         )}
         {children}
+        <AddToHomeScreenPrompt />
         <BottomNav />
       </body>
     </html>
