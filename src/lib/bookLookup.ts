@@ -1,6 +1,26 @@
 import type { BookLookupResult } from "./types";
 
 /**
+ * One-shot warning when NEXT_PUBLIC_GROQ_API_KEY is missing. Without this,
+ * the three Groq call sites all `return null` silently and scan failures
+ * look indistinguishable from "the model couldn't read the cover" —
+ * diagnosing a missing env var on a deployed build takes 10× longer than
+ * it should. See src/app/book/list/page.tsx for the scan pipeline that
+ * depends on these calls.
+ */
+let groqMissingWarned = false;
+function warnMissingGroqKeyOnce() {
+  if (groqMissingWarned) return;
+  groqMissingWarned = true;
+  console.warn(
+    "[bookLookup] NEXT_PUBLIC_GROQ_API_KEY is not set. Vision + LLM " +
+      "scan paths will no-op; OCR-only fallback will be used. On Vercel: " +
+      "Project → Settings → Environment Variables → ensure the key is " +
+      "present with Preview scope enabled, then redeploy."
+  );
+}
+
+/**
  * Search Google Books API (free, no key required for basic queries).
  * Returns null on any failure; logs 429 rate-limit separately so callers
  * know to skip retrying for a while.
@@ -311,7 +331,10 @@ export async function identifyBookFromImage(
   imageSource: File | string
 ): Promise<{ title: string; author: string; series: string | null } | null> {
   const groqKey = process.env.NEXT_PUBLIC_GROQ_API_KEY;
-  if (!groqKey) return null;
+  if (!groqKey) {
+    warnMissingGroqKeyOnce();
+    return null;
+  }
 
   try {
     const dataUri = await fileToBase64(imageSource);
@@ -394,7 +417,10 @@ export async function extractBookInfoFromOcrLLM(
   ocrText: string
 ): Promise<{ title: string; author: string; series: string | null } | null> {
   const groqKey = process.env.NEXT_PUBLIC_GROQ_API_KEY;
-  if (!groqKey) return null;
+  if (!groqKey) {
+    warnMissingGroqKeyOnce();
+    return null;
+  }
 
   try {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -464,7 +490,10 @@ export async function inferBookDetails(
   author: string
 ): Promise<{ genre: string; ageRange: string; summary: string; series: string | null } | null> {
   const groqKey = process.env.NEXT_PUBLIC_GROQ_API_KEY;
-  if (!groqKey) return null;
+  if (!groqKey) {
+    warnMissingGroqKeyOnce();
+    return null;
+  }
 
   try {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
