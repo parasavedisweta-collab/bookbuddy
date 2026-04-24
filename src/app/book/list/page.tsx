@@ -58,7 +58,15 @@ async function normalizeImage(file: File): Promise<File> {
 }
 export default function ListBookPage() {
   const router = useRouter();
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Two separate inputs so we can give each the right browser hint:
+  //   cameraInputRef: has `capture="environment"` → iOS/Android opens
+  //     the back camera directly.
+  //   libraryInputRef: no capture attribute → opens photo library / file
+  //     picker. Needed because on iOS Safari you can't have one input
+  //     that offers both (capture forces camera-only, omitting it hides
+  //     the camera entry on some OS versions).
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const libraryInputRef = useRef<HTMLInputElement>(null);
 
   const [step, setStep] = useState<Step>("scan");
   const [loading, setLoading] = useState(false);
@@ -97,7 +105,9 @@ export default function ListBookPage() {
       setScanError(
         "That image format isn't supported on this device. Please use a JPG, PNG, or WebP photo."
       );
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      // Reset both inputs so the same file can be re-selected after an error.
+      if (cameraInputRef.current) cameraInputRef.current.value = "";
+      if (libraryInputRef.current) libraryInputRef.current.value = "";
       return;
     }
 
@@ -534,11 +544,9 @@ export default function ListBookPage() {
       {/* Step 1: Scan */}
       {step === "scan" && (
         <div className="space-y-8 pt-4">
-          {/* Upload area */}
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={loading}
-            className="w-full aspect-[3/4] max-w-xs mx-auto bg-surface-container-low rounded-xl border-2 border-dashed border-outline-variant/40 flex flex-col items-center justify-center hover:bg-surface-container-high transition-colors"
+          {/* Preview / loading area — tap either button below to change. */}
+          <div
+            className="w-full aspect-[3/4] max-w-xs mx-auto bg-surface-container-low rounded-xl border-2 border-dashed border-outline-variant/40 flex flex-col items-center justify-center overflow-hidden"
           >
             {loading ? (
               <div className="text-center">
@@ -559,26 +567,55 @@ export default function ListBookPage() {
                   photo_camera
                 </span>
                 <p className="font-headline font-bold text-on-surface">
-                  Take a photo or upload
+                  Add a book cover
                 </p>
                 <p className="text-sm text-on-surface-variant mt-1">
-                  Point at the book cover
+                  Point at the cover or choose from your library
                 </p>
               </>
             )}
-          </button>
+          </div>
 
-          {/*
-            No `capture` attribute: with it set to "environment", iOS
-            Safari in particular opens the camera directly and hides
-            the "Photo Library" option from the OS picker. Leaving it
-            off lets the browser show a sheet with both camera and
-            gallery — which matches the "Take a photo or upload" copy.
-          */}
+          {/* Two buttons, two inputs. On iOS Safari (and most Androids)
+              you cannot get a single input to offer BOTH "Take Photo" and
+              "Photo Library" reliably: `capture` forces camera-only, and
+              omitting it hides the camera entry. Splitting them into two
+              buttons is the path that works everywhere. */}
+          <div className="flex gap-3 max-w-xs mx-auto">
+            <button
+              onClick={() => cameraInputRef.current?.click()}
+              disabled={loading}
+              className="flex-1 flex items-center justify-center gap-2 py-3 rounded-full bg-primary text-on-primary font-bold text-sm disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-lg">photo_camera</span>
+              Take photo
+            </button>
+            <button
+              onClick={() => libraryInputRef.current?.click()}
+              disabled={loading}
+              className="flex-1 flex items-center justify-center gap-2 py-3 rounded-full bg-surface-container-high text-on-surface font-bold text-sm disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-lg">photo_library</span>
+              Upload
+            </button>
+          </div>
+
+          {/* Camera input: capture="environment" opens the back camera. */}
           <input
-            ref={fileInputRef}
+            ref={cameraInputRef}
             type="file"
-            accept="image/jpeg,image/png,image/webp,image/avif,image/heic,image/heif"
+            accept="image/*"
+            capture="environment"
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+          {/* Library input: no capture → opens Photos / file picker.
+              accept="image/*" (broad) so iOS doesn't silently filter out
+              HEIC by MIME-type mismatch; normalizeImage handles conversion. */}
+          <input
+            ref={libraryInputRef}
+            type="file"
+            accept="image/*"
             onChange={handleFileSelect}
             className="hidden"
           />
@@ -592,8 +629,13 @@ export default function ListBookPage() {
               <div className="flex-1">
                 <p className="text-sm font-medium text-on-surface">{scanError}</p>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+                  {/* Default retry route is the library picker — if the
+                      original upload came from the camera it's usually
+                      easier to pick a different saved photo than to
+                      re-aim the camera. Camera is still one tap away
+                      from the buttons above. */}
                   <button
-                    onClick={() => { setScanError(null); fileInputRef.current?.click(); }}
+                    onClick={() => { setScanError(null); libraryInputRef.current?.click(); }}
                     className="text-primary font-bold text-sm"
                   >
                     Try another photo
