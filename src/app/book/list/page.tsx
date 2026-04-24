@@ -689,49 +689,63 @@ export default function ListBookPage() {
             className="hidden"
           />
 
-          {/* Scan error message */}
+          {/* Scan error message.
+              UX note: the AI pipeline regularly rejects stylised children's
+              book covers (hand-drawn titles, decorative author fonts) even
+              though the photo itself is perfect. Users have no way to know
+              they're fighting an OCR limitation rather than a photo quality
+              issue — so we lead with a big obvious "List it anyway" primary
+              button and relegate the retry to a secondary link. Previous
+              layout put both as equal-weight text links and users missed
+              the escape hatch entirely (see Enid Blyton / Magic Faraway
+              Tree cover rejection report). */}
           {scanError && (
-            <div className="bg-error-container/10 border border-error/20 rounded-xl p-4 flex gap-3 items-start">
-              <span className="material-symbols-outlined text-error text-xl shrink-0 mt-0.5">
-                error
-              </span>
-              <div className="flex-1">
-                <p className="text-sm font-medium text-on-surface">{scanError}</p>
-                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
-                  {/* Default retry route is the library picker — if the
-                      original upload came from the camera it's usually
-                      easier to pick a different saved photo than to
-                      re-aim the camera. Camera is still one tap away
-                      from the buttons above. */}
-                  <button
-                    onClick={() => { setScanError(null); libraryInputRef.current?.click(); }}
-                    className="text-primary font-bold text-sm"
-                  >
-                    Try another photo
-                  </button>
-                  {/* Escape hatch: when the photo is already captured, let
-                      the user bail out of the AI pipeline and fill in the
-                      details by hand. Only shown when a photo actually
-                      exists (either kind of failure preserves userPhoto). */}
-                  {userPhoto && (
-                    <button
-                      onClick={() => {
-                        setScanError(null);
-                        setApiCoverUrl(null);
-                        setSelectedCover("user_photo");
-                        setConfidence("low");
-                        setMetadataWarning(
-                          "We couldn't read this cover automatically. Please fill in the title, author and other details below."
-                        );
-                        setStep("details");
-                      }}
-                      className="text-on-surface-variant font-bold text-sm"
-                    >
-                      Use this photo anyway
-                    </button>
-                  )}
-                </div>
+            <div className="bg-error-container/10 border border-error/20 rounded-xl p-4 space-y-3">
+              <div className="flex gap-3 items-start">
+                <span className="material-symbols-outlined text-error text-xl shrink-0 mt-0.5">
+                  error
+                </span>
+                <p className="text-sm font-medium text-on-surface flex-1">
+                  {scanError}
+                </p>
               </div>
+
+              {/* Primary action: proceed with this photo + manual entry.
+                  Only rendered when a photo is actually in state — both
+                  failure modes above (invalid format / OCR rejection)
+                  preserve userPhoto, so this is the common path. */}
+              {userPhoto && (
+                <button
+                  onClick={() => {
+                    setScanError(null);
+                    setApiCoverUrl(null);
+                    setSelectedCover("user_photo");
+                    setConfidence("low");
+                    setMetadataWarning(
+                      "We couldn't read this cover automatically. Please fill in the title, author and other details below."
+                    );
+                    setStep("details");
+                  }}
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-full bg-primary text-on-primary font-bold text-sm"
+                >
+                  <span
+                    className="material-symbols-outlined text-lg"
+                    style={{ fontVariationSettings: "'FILL' 1" }}
+                  >
+                    arrow_forward
+                  </span>
+                  List this book anyway
+                </button>
+              )}
+
+              {/* Secondary: try another photo. Camera is still one tap
+                  away from the buttons above the error card. */}
+              <button
+                onClick={() => { setScanError(null); libraryInputRef.current?.click(); }}
+                className="w-full text-center text-primary font-bold text-sm py-2"
+              >
+                Try a different photo instead
+              </button>
             </div>
           )}
         </div>
