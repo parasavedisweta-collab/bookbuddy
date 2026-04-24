@@ -156,12 +156,32 @@ export default function HomePage() {
       (b) => !isMine(b.child_id) && !myShelfBookIds.has(b.id)
     );
 
-    // Merge, deduping by id. Supabase wins on collisions: the dual-write
-    // phase writes to both stores but only Supabase has the real joined
-    // society_id / child name, so we prefer that copy.
+    // Merge, deduping by id. Supabase wins on collisions for most fields
+    // (it has the real joined society_id / child name), EXCEPT cover_url:
+    // user-photo covers live as base64 in localStorage and as cover_url=null
+    // in Supabase (Storage upload isn't wired yet). A blanket overwrite here
+    // would strip the cover from every freshly-listed user-photo book, which
+    // the user perceives as a failed upload. So when Supabase's cover is
+    // null but we have a local cover for the same id, keep the local one.
+    // Look up against the full allBooks, not the filtered localMatches —
+    // filtering can't move a book between "mine" and "theirs" for the same
+    // id, but the guard is cheap and future-proofs the merge.
+    const localById = new Map<string, Book>();
+    for (const b of allBooks) localById.set(b.id, b);
     const byId = new Map<string, Book>();
     for (const b of localMatches) byId.set(b.id, b);
-    for (const b of supabaseMatches) byId.set(b.id, b);
+    for (const b of supabaseMatches) {
+      const local = localById.get(b.id);
+      if (local && !b.cover_url && local.cover_url) {
+        byId.set(b.id, {
+          ...b,
+          cover_url: local.cover_url,
+          cover_source: local.cover_source,
+        });
+      } else {
+        byId.set(b.id, b);
+      }
+    }
     let books = Array.from(byId.values());
 
     if (genreFilter) {
