@@ -15,6 +15,7 @@ import { suggestCities, canonicaliseCity } from "@/lib/cities";
 import { findOrCreateSociety } from "@/lib/supabase/societies";
 import { createParent } from "@/lib/supabase/parents";
 import { createChild } from "@/lib/supabase/children";
+import { ensureAnonymousSession } from "@/lib/supabase/client";
 
 interface NominatimResult {
   place_id: number;
@@ -69,6 +70,17 @@ export default function ChildSetupPage() {
   const [ageGroup, setAgeGroup] = useState<string>("");
   const [consent, setConsent] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Is the anonymous Supabase session live? createParent needs auth.uid()
+  // to satisfy the `parents.id = auth.uid()` RLS policy, so submitting
+  // before bootstrap finishes results in a silently-rejected INSERT and
+  // a zombie localStorage-only account. We wait for either `ensureAnonymousSession`
+  // to resolve (the happy path) or the `bb_supabase_auth` event fired by
+  // SupabaseAuthBootstrap on cold loads.
+  const [sessionReady, setSessionReady] = useState(false);
+  // User-facing error surfaced when any of the three Supabase writes
+  // (findOrCreateSociety / createParent / createChild) fail. Shown above
+  // the submit button; cleared on the next submit attempt.
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const [chosen, setChosen] = useState<ChosenSociety | null>(null);
   const [location, setLocation] = useState<LocationState>({ status: "idle" });
@@ -162,6 +174,30 @@ export default function ChildSetupPage() {
     }, 400);
   }, [searchQuery]);
 
+  // Wait for the anonymous Supabase session before allowing submit.
+  // ensureAnonymousSession() is idempotent — it returns the existing uid
+  // when the session is already live (usually the case on re-entry to
+  // this page), otherwise it mints one. We also subscribe to the
+  // bb_supabase_auth event so we pick up a late bootstrap resolve on
+  // cold-start races without having to poll.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const uid = await ensureAnonymousSession();
+        if (!cancelled && uid) setSessionReady(true);
+      } catch (err) {
+        console.error("[child-setup] session bootstrap failed:", err);
+      }
+    })();
+    const onAuth = () => setSessionReady(true);
+    window.addEventListener("bb_supabase_auth", onAuth);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("bb_supabase_auth", onAuth);
+    };
+  }, []);
+
   function pickNeighbour(s: SocietySuggestion) {
     setChosen({ id: s.id, name: s.name, city: s.city, source: "neighbour" });
     clearSearch();
@@ -204,56 +240,109 @@ export default function ChildSetupPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!childName || !ageGroup || !consent || !chosen) return;
+    setSubmitError(null);
     setLoading(true);
 
-    // Write to Supabase first. Dual-write to localStorage below keeps the
-    // rest of the app (profile, home feed, book listing) working during
-    // the migration — those callsites will move to Supabase reads next.
-    //
-    // Failures here fall through and still land the user on /success so
-    // UAT smoke-testing isn't blocked by a transient network issue. The
-    // error is logged loudly; admins can spot orphaned localStorage-only
-    // accounts by diffing Supabase users against local traffic.
-    try {
-      const parentPhone =
-        localStorage.getItem("bb_parent_phone") ?? undefined;
-      const ageGroupDb = ageDisplayToDb(ageGroup);
+    // Supabase is the source of truth. If any of society / parent / child
+    // inserts fail, we bail BEFORE writing localStorage or navigating —
+    // otherwise the user lands on a success screen backed by no server
+    // data, home feed stays empty, and requests can't route to them.
+    // (Bug history: this exact path produced the "Mukesh" zombie account
+    // on UAT — localStorage said registered, Supabase had nothing.)
+    const parentPhone = localStorage.getItem("bb_parent_phone") ?? undefined;
+    const ageGroupDb = ageDisplayToDb(ageGroup);
 
-      if (parentPhone && ageGroupDb) {
-        const society = await findOrCreateSociety(chosen.name, chosen.city);
-        if (society) {
-          const parent = await createParent({
-            phone: parentPhone,
-            society_id: society.id,
-          });
-          if (parent) {
-            await createChild({
-              name: childName,
-              age_group: ageGroupDb,
-            });
-          } else {
-            console.warn(
-              "[child-setup] parent insert returned null; continuing on local only"
-            );
-          }
-        } else {
-          console.warn(
-            "[child-setup] society upsert returned null; continuing on local only"
-          );
-        }
-      } else {
-        console.warn(
-          "[child-setup] missing phone or invalid age group; skipping Supabase writes",
-          { parentPhone, ageGroup, ageGroupDb }
+    if (!parentPhone || !ageGroupDb) {
+      setSubmitError(
+        "Something's off with your details. Please go back and re-enter your phone number."
+      );
+      setLoading(false);
+      return;
+    }
+
+    // Belt-and-braces: make sure the anon session is actually live. The
+    // submit button is already gated on `sessionReady`, but a user could
+    // have the form up from before bootstrap finished, fill it out, and
+    // tap submit the instant sessionReady flipped true. ensureAnonymousSession
+    // is idempotent and cheap; it also catches the edge case where the
+    // session expired between form-fill and submit.
+    let uid: string | null = null;
+    try {
+      uid = await ensureAnonymousSession();
+    } catch (err) {
+      console.error("[child-setup] ensureAnonymousSession threw:", err);
+    }
+    if (!uid) {
+      setSubmitError(
+        "Couldn't connect to the server. Please check your internet and try again."
+      );
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const society = await findOrCreateSociety(chosen.name, chosen.city);
+      if (!society) {
+        setSubmitError(
+          "Couldn't save your society. Please check your connection and try again."
         );
+        setLoading(false);
+        return;
+      }
+
+      const parent = await createParent({
+        phone: parentPhone,
+        society_id: society.id,
+      });
+      if (!parent) {
+        // The two realistic failure modes here are:
+        //   (a) phone UNIQUE collision — happens when this same number
+        //       registered on another device already (Path A's cross-
+        //       device limitation). Register page's isPhoneRegistered
+        //       check usually catches it, but a transient RPC failure
+        //       can let the user slip through.
+        //   (b) network blip.
+        // We can't distinguish without inspecting the PostgREST error,
+        // and createParent already console.errors the real one — surface
+        // a message covering both cases.
+        setSubmitError(
+          "Couldn't create your account. This number may already be registered on another device, " +
+            "or there might be a connection issue. Try a different phone number or check your connection."
+        );
+        setLoading(false);
+        return;
+      }
+
+      const child = await createChild({
+        name: childName,
+        age_group: ageGroupDb,
+      });
+      if (!child) {
+        // Parent inserted but child didn't — rare (would need RLS mismatch
+        // or network flake on the second round-trip). The parent row is
+        // orphaned; we tell the user to retry. On retry, createParent
+        // will fail with UNIQUE, and they'll see the error above — at
+        // which point they know to contact support. Not ideal, but
+        // leaves a clear trail rather than a silent zombie.
+        setSubmitError(
+          "Almost there — couldn't save your child's profile. Please try again."
+        );
+        setLoading(false);
+        return;
       }
     } catch (err) {
       console.error("[child-setup] Supabase write failed:", err);
+      setSubmitError(
+        "Something went wrong talking to the server. Please try again."
+      );
+      setLoading(false);
+      return;
     }
 
-    // Legacy localStorage path — keeps the rest of the app functional
-    // until reads are migrated. Remove once profile/home/shelf/feed all
-    // pull from Supabase.
+    // Supabase state is consistent. NOW we write localStorage for legacy
+    // readers (profile, home feed, book listing) and navigate to success.
+    // Remove this block once those callsites have fully migrated to
+    // Supabase reads.
     localStorage.setItem(
       "bb_child",
       JSON.stringify({
@@ -266,7 +355,6 @@ export default function ChildSetupPage() {
       })
     );
 
-    const parentPhone = localStorage.getItem("bb_parent_phone") ?? undefined;
     registerNewChild({
       name: childName,
       ageGroup,
@@ -638,14 +726,45 @@ export default function ChildSetupPage() {
           </span>
         </label>
 
+        {submitError && (
+          <div
+            role="alert"
+            className="bg-error-container/50 border border-error/30 rounded-xl p-4 flex items-start gap-3"
+          >
+            <span className="material-symbols-outlined text-error shrink-0 mt-0.5">
+              error
+            </span>
+            <p className="text-sm text-on-error-container leading-snug">
+              {submitError}
+            </p>
+          </div>
+        )}
+
         <Button
           type="submit"
           fullWidth
-          disabled={!childName || !ageGroup || !consent || !chosen || loading}
+          disabled={
+            !childName ||
+            !ageGroup ||
+            !consent ||
+            !chosen ||
+            loading ||
+            !sessionReady
+          }
         >
-          {loading ? "Creating..." : "Create Account"}
+          {loading
+            ? "Creating..."
+            : !sessionReady
+              ? "Connecting…"
+              : "Create Account"}
           <span className="material-symbols-outlined">arrow_forward</span>
         </Button>
+
+        {!sessionReady && !loading && (
+          <p className="text-center text-xs text-on-surface-variant">
+            Waiting for a secure connection…
+          </p>
+        )}
 
         <p className="text-center text-xs text-on-surface-variant">
           By creating an account, you agree to our Terms of Service and Privacy

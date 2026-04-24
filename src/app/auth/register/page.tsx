@@ -34,6 +34,13 @@ export default function RegisterPage() {
     //    can't re-authenticate them onto this device — surfacing the
     //    conflict beats failing with a UNIQUE violation at the end of
     //    child-setup.
+    //
+    //    We block on lookup FAILURE too (unlike the previous "log and
+    //    continue" behaviour). Silently proceeding when the RPC failed
+    //    lets a user who is already registered elsewhere slip into
+    //    child-setup and produce a zombie localStorage-only account.
+    //    Asking them to retry is the right tradeoff — the alternative is
+    //    a silent data divergence we have to clean up later.
     try {
       const takenElsewhere = await isPhoneRegisteredInSupabase(digits);
       if (takenElsewhere) {
@@ -45,10 +52,12 @@ export default function RegisterPage() {
         return;
       }
     } catch (e) {
-      // Lookup failure: fall through and let child-setup's INSERT catch
-      // a real collision. We still proceed so users aren't blocked by
-      // a flaky network read.
-      console.warn("[register] phone lookup failed, continuing:", e);
+      console.warn("[register] phone lookup failed:", e);
+      setError(
+        "Couldn't verify your phone number. Please check your connection and try again."
+      );
+      setLoading(false);
+      return;
     }
 
     // 3) New user — stash phone for child-setup, continue.
