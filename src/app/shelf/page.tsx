@@ -376,12 +376,27 @@ export default function ShelfPage() {
       (r.status === "pending" || r.status === "approved" || r.status === "picked_up")
   );
 
-  // Merge localStorage books with Supabase books (Supabase wins on dedup —
-  // it has the real child name and survives localStorage wipes).
+  // Merge localStorage books with Supabase books. Supabase wins on most
+  // fields — real child name, survives localStorage wipes — EXCEPT cover_url
+  // when it's null. User-photo covers live as base64 in localStorage only
+  // (Storage upload isn't wired yet), so a blanket overwrite would strip
+  // the cover from every freshly-listed user-photo book and make it look
+  // like the upload silently failed. Preserve the local cover in that case.
   const mergedBooks = (() => {
     const byId = new Map<string, Book>();
     for (const b of books) byId.set(b.id, b);
-    for (const b of supabaseBooks) byId.set(b.id, b);
+    for (const b of supabaseBooks) {
+      const local = byId.get(b.id);
+      if (local && !b.cover_url && local.cover_url) {
+        byId.set(b.id, {
+          ...b,
+          cover_url: local.cover_url,
+          cover_source: local.cover_source,
+        });
+      } else {
+        byId.set(b.id, b);
+      }
+    }
     return Array.from(byId.values());
   })();
 
