@@ -382,25 +382,63 @@ export default function ShelfPage() {
     return Array.from(byId.values());
   })();
 
-  // Section 1: Books I requested (as borrower, pending/declined)
-  const myRequests = mergedRequests.filter(
-    (r) =>
-      isMyChild(r.borrower_child_id) &&
-      (r.status === "pending" || r.status === "declined")
+  // Collapse multiple rows for the same (book, borrower) pair down to the
+  // most recent one. Without this, re-requesting a book after a decline
+  // gets you two cards on the shelf — the old declined row AND the new
+  // pending row — because both match the same filter. Users rightly read
+  // that as "my shelf is double-counting." Supabase never deletes history
+  // (the borrower/lister admin view needs it), so dedup is a view concern.
+  //
+  // Key = book_id + borrower_child_id. Lister-side dedup just uses book_id
+  // + lister_child_id for symmetry — the same book can accumulate multiple
+  // lender-perspective rows once you have several historical borrowers.
+  function keepLatestPerBook(
+    rows: BorrowRequest[],
+    sideKey: "borrower_child_id" | "lister_child_id"
+  ): BorrowRequest[] {
+    const best = new Map<string, BorrowRequest>();
+    for (const r of rows) {
+      const key = `${r.book_id}|${r[sideKey]}`;
+      const prior = best.get(key);
+      if (!prior || new Date(r.requested_at) > new Date(prior.requested_at)) {
+        best.set(key, r);
+      }
+    }
+    return Array.from(best.values());
+  }
+
+  // Section 1: Books I requested (as borrower, pending/declined).
+  // Filter to the statuses first, THEN dedup, so a book that was declined
+  // and then re-requested shows the new pending — not the old declined
+  // bubbled up by a fresh `requested_at` that doesn't exist yet. (Works
+  // either way since newer rows win the dedup regardless of status.)
+  const myRequests = keepLatestPerBook(
+    mergedRequests.filter(
+      (r) =>
+        isMyChild(r.borrower_child_id) &&
+        (r.status === "pending" || r.status === "declined")
+    ),
+    "borrower_child_id"
   );
 
   // Section 2: Books I'm reading (as borrower, approved/picked_up)
-  const myReading = mergedRequests.filter(
-    (r) =>
-      isMyChild(r.borrower_child_id) &&
-      (r.status === "approved" || r.status === "picked_up")
+  const myReading = keepLatestPerBook(
+    mergedRequests.filter(
+      (r) =>
+        isMyChild(r.borrower_child_id) &&
+        (r.status === "approved" || r.status === "picked_up")
+    ),
+    "borrower_child_id"
   );
 
   // Section 3: Books I'm lending (as lister, active)
-  const myLending = mergedRequests.filter(
-    (r) =>
-      isMyChild(r.lister_child_id) &&
-      (r.status === "pending" || r.status === "approved" || r.status === "picked_up")
+  const myLending = keepLatestPerBook(
+    mergedRequests.filter(
+      (r) =>
+        isMyChild(r.lister_child_id) &&
+        (r.status === "pending" || r.status === "approved" || r.status === "picked_up")
+    ),
+    "lister_child_id"
   );
 
   // Merge localStorage books with Supabase books. Supabase wins on most
