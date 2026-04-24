@@ -77,6 +77,51 @@ export async function listChildrenForCurrentParent(): Promise<DbChild[]> {
   return (data ?? []) as DbChild[];
 }
 
+/**
+ * Is the current parent the only registered parent in `societyId`?
+ *
+ * We can't count parents directly — parents.RLS restricts SELECT to
+ * `id = auth.uid()` so `count(*) where society_id = ...` always returns
+ * at most 1 regardless of reality. Children has a permissive SELECT
+ * policy and carries `society_id` denormalised (migration 0003), so we
+ * count distinct parent_ids in children for the target society and
+ * check whether it's ≤ 1 (this parent, or nobody if they haven't added
+ * a child yet).
+ *
+ * Returns true when "nobody else is here yet, invite them" should be
+ * shown. Returns false on any error — we'd rather under-show the
+ * invite banner than flash it for a busy society on a transient glitch.
+ *
+ * Callers should pass the parent's actual society_id resolved via
+ * getCurrentParent() — passing null/empty short-circuits to false.
+ */
+export async function isAloneInSociety(
+  societyId: string | null,
+  myParentId: string | null
+): Promise<boolean> {
+  if (!societyId || !myParentId) return false;
+
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("children")
+    .select("parent_id")
+    .eq("society_id", societyId);
+
+  if (error) {
+    console.error("[children] isAloneInSociety failed:", error);
+    return false;
+  }
+
+  const distinctParents = new Set<string>();
+  for (const row of data ?? []) {
+    if (row.parent_id) distinctParents.add(row.parent_id);
+  }
+  // Alone = nobody listed OR only me.
+  if (distinctParents.size === 0) return true;
+  if (distinctParents.size === 1 && distinctParents.has(myParentId)) return true;
+  return false;
+}
+
 /** Fetch a single child by id (readable by any authenticated user). */
 export async function getChildById(id: string): Promise<DbChild | null> {
   if (!id) return null;
