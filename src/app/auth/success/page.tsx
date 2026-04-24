@@ -3,11 +3,20 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getAllBooks, getAllChildren, getCurrentUserSocietyId } from "@/lib/userStore";
+import { getCurrentParent } from "@/lib/supabase/parents";
+import { isAloneInSociety } from "@/lib/supabase/children";
+import ShareAppButton from "@/components/ShareAppButton";
 
 export default function SuccessPage() {
   const [childName, setChildName] = useState("Reader");
   const [memberCount, setMemberCount] = useState(0);
   const [bookCount, setBookCount] = useState(0);
+  // Supabase-resolved "is this parent the only registered one in their
+  // society?" Starts null so we don't flash the "first member!" copy for
+  // someone who's actually the 50th — the localStorage heuristic below is
+  // a best-effort fallback until this resolves, but the Supabase answer
+  // wins once it arrives.
+  const [isAloneSupabase, setIsAloneSupabase] = useState<boolean | null>(null);
 
   useEffect(() => {
     // Child name from registration flow
@@ -19,7 +28,7 @@ export default function SuccessPage() {
       }
     } catch {}
 
-    // Society stats
+    // Society stats (localStorage — instant, used as fallback copy only)
     const societyId = getCurrentUserSocietyId();
     const members = getAllChildren().filter((c) => c.societyId === societyId);
     const books = getAllBooks().filter((b) => b.society_id === societyId);
@@ -27,7 +36,35 @@ export default function SuccessPage() {
     setBookCount(books.length);
   }, []);
 
-  const isFirst = memberCount <= 1; // only this new user in society
+  // Supabase authoritative check. Runs once on mount — the user just
+  // finished registration so the parent + child rows exist by now.
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      try {
+        const parent = await getCurrentParent();
+        if (cancelled) return;
+        if (!parent?.society_id) {
+          setIsAloneSupabase(null); // can't determine; keep localStorage guess
+          return;
+        }
+        const alone = await isAloneInSociety(parent.society_id, parent.id);
+        if (!cancelled) setIsAloneSupabase(alone);
+      } catch (err) {
+        console.error("[success] isAloneInSociety check failed:", err);
+      }
+    }
+    check();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Prefer the Supabase answer when available, otherwise fall back to the
+  // localStorage member count. This keeps the page snappy on slow networks
+  // while still self-correcting once the real data arrives.
+  const isFirst =
+    isAloneSupabase !== null ? isAloneSupabase : memberCount <= 1;
 
   return (
     <main className="flex-grow flex flex-col items-center justify-center p-6 relative overflow-hidden pb-32"
@@ -141,6 +178,22 @@ export default function SuccessPage() {
                 ? "Build your library first by inviting your friends to join"
                 : `There are already ${bookCount} books listed in your society!`}
             </p>
+          </div>
+
+          {/* Share CTA — prominent variant turns the "you're first!" moment
+              into an invite nudge; everyone else gets the compact default
+              button. Both rely on the OS share sheet where available, with
+              a clipboard fallback. */}
+          <div className="pt-2">
+            {isFirst ? (
+              <ShareAppButton
+                variant="prominent"
+                headline="You're first in your society!"
+                subhead="Share BookBuddy in your society WhatsApp group so there are books to borrow."
+              />
+            ) : (
+              <ShareAppButton variant="default" />
+            )}
           </div>
         </div>
       </div>

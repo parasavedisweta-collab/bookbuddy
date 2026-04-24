@@ -12,7 +12,10 @@ import {
   type DemoChildId,
 } from "@/lib/userStore";
 import { getSupabase } from "@/lib/supabase/client";
+import { getCurrentParent } from "@/lib/supabase/parents";
+import { isAloneInSociety } from "@/lib/supabase/children";
 import Button from "@/components/ui/Button";
+import ShareAppButton from "@/components/ShareAppButton";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -26,6 +29,12 @@ export default function ProfilePage() {
   // without it, double-taps could fire two signOut calls and the user has
   // no feedback that anything is happening.
   const [signingOut, setSigningOut] = useState(false);
+  // `isAlone` drives the prominent share-card banner. Resolved async from
+  // Supabase (parents.society_id + distinct-parent count in children), so
+  // we start with null to avoid a flash of the banner for established users
+  // while the query is in flight. null = unknown, true = show banner,
+  // false = normal profile (default share button only).
+  const [isAlone, setIsAlone] = useState<boolean | null>(null);
 
   const refresh = useCallback(() => {
     const id = getCurrentChildId();
@@ -65,6 +74,39 @@ export default function ProfilePage() {
       window.removeEventListener("bb_requests_change", refresh);
     };
   }, [refresh]);
+
+  // Resolve first-in-society status from Supabase. We re-run when the user
+  // identity or children set changes (bb_user_change fires after registration
+  // and sign-out; bb_supabase_auth fires once bootstrap mints the session).
+  // The helper returns `false` on any error, so a transient network glitch
+  // won't pop the "you're first!" banner for a veteran user.
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      try {
+        const parent = await getCurrentParent();
+        if (cancelled) return;
+        if (!parent?.society_id) {
+          setIsAlone(false);
+          return;
+        }
+        const alone = await isAloneInSociety(parent.society_id, parent.id);
+        if (!cancelled) setIsAlone(alone);
+      } catch (err) {
+        console.error("[profile] isAloneInSociety check failed:", err);
+        if (!cancelled) setIsAlone(false);
+      }
+    }
+    check();
+    const onChange = () => check();
+    window.addEventListener("bb_user_change", onChange);
+    window.addEventListener("bb_supabase_auth", onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("bb_user_change", onChange);
+      window.removeEventListener("bb_supabase_auth", onChange);
+    };
+  }, []);
 
   /**
    * Sign out: end the Supabase session AND blank this device's localStorage.
@@ -146,6 +188,15 @@ export default function ProfilePage() {
           </div>
         </div>
 
+        {/* First-in-society banner: prompts the newly registered user to
+            invite neighbours so there are actually books to borrow. Hidden
+            until the Supabase check resolves (isAlone === null), then only
+            rendered when true. Once someone else joins the society, it
+            quietly disappears on the next mount. */}
+        {isAlone === true && (
+          <ShareAppButton variant="prominent" />
+        )}
+
         {/* Actions */}
         <div className="space-y-3">
           <Link href="/book/list" className="block">
@@ -154,6 +205,8 @@ export default function ProfilePage() {
               List a new book
             </Button>
           </Link>
+          {/* Always-on share CTA, regardless of society-alone status. */}
+          <ShareAppButton variant="default" />
           <button
             onClick={handleSignOut}
             disabled={signingOut}

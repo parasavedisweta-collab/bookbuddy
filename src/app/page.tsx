@@ -8,8 +8,11 @@ import {
   fetchSocietyFeed,
   resolveCurrentSocietyId,
 } from "@/lib/supabase/feed";
-import { listChildrenForCurrentParent } from "@/lib/supabase/children";
+import { listChildrenForCurrentParent, isAloneInSociety } from "@/lib/supabase/children";
+import { getCurrentParent } from "@/lib/supabase/parents";
 import { fetchMyRequests } from "@/lib/supabase/requests";
+import ShareAppButton from "@/components/ShareAppButton";
+import NotificationBell from "@/components/NotificationBell";
 import type { Genre, Book, BorrowRequest } from "@/lib/types";
 
 export default function HomePage() {
@@ -30,6 +33,10 @@ export default function HomePage() {
   // device disappears from this device's feed. The home feed never renders
   // request cards itself — that's the shelf's job.
   const [supabaseRequests, setSupabaseRequests] = useState<BorrowRequest[]>([]);
+  // First-in-society signal drives the "invite your neighbours" banner above
+  // the feed. null while the Supabase query is in flight so we don't flash
+  // the banner for an established society on first paint.
+  const [isAlone, setIsAlone] = useState<boolean | null>(null);
 
   useEffect(() => {
     const refresh = () => {
@@ -81,6 +88,42 @@ export default function HomePage() {
     // bb_supabase_auth fires from SupabaseAuthBootstrap once the anon
     // session is ready, so pages that rendered pre-session refill.
     const onChange = () => loadSupabase();
+    window.addEventListener("bb_user_change", onChange);
+    window.addEventListener("bb_books_change", onChange);
+    window.addEventListener("bb_supabase_auth", onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("bb_user_change", onChange);
+      window.removeEventListener("bb_books_change", onChange);
+      window.removeEventListener("bb_supabase_auth", onChange);
+    };
+  }, []);
+
+  // First-in-society check — shows an invite banner when the user is the
+  // only registered parent in their society. Uses the Supabase helper
+  // (counts distinct parent_ids in children, since parents RLS hides
+  // everyone else). Re-runs on user change so the banner disappears as
+  // soon as a neighbour joins. bb_books_change catches the case where
+  // someone else's first book listing implicitly proves they've joined.
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      try {
+        const parent = await getCurrentParent();
+        if (cancelled) return;
+        if (!parent?.society_id) {
+          setIsAlone(false);
+          return;
+        }
+        const alone = await isAloneInSociety(parent.society_id, parent.id);
+        if (!cancelled) setIsAlone(alone);
+      } catch (err) {
+        console.error("[home] isAloneInSociety check failed:", err);
+        if (!cancelled) setIsAlone(false);
+      }
+    }
+    check();
+    const onChange = () => check();
     window.addEventListener("bb_user_change", onChange);
     window.addEventListener("bb_books_change", onChange);
     window.addEventListener("bb_supabase_auth", onChange);
@@ -233,9 +276,7 @@ export default function HomePage() {
               BookBuddy
             </span>
           </div>
-          <button className="p-2 text-on-surface-variant">
-            <span className="material-symbols-outlined">notifications</span>
-          </button>
+          <NotificationBell />
         </div>
 
         {/* Search */}
@@ -255,6 +296,17 @@ export default function HomePage() {
         {/* Genre chips */}
         <GenreChips selected={genreFilter} onSelect={setGenreFilter} />
       </header>
+
+      {/* First-in-society invite banner. Renders above the feed so it's
+          the first thing the user sees when the grid is empty (their only
+          child has no listings yet), and rides along at the top otherwise.
+          Hidden entirely while the Supabase check is in flight (isAlone
+          === null) and once a neighbour joins (false). */}
+      {isAlone === true && (
+        <section className="px-5 pt-2 pb-4">
+          <ShareAppButton variant="prominent" />
+        </section>
+      )}
 
       {/* Book Grid */}
       <section className="px-5 pb-8">
