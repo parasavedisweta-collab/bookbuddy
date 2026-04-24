@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Be_Vietnam_Pro, Plus_Jakarta_Sans } from "next/font/google";
 import BottomNav from "@/components/BottomNav";
-import DevUserSwitcher from "@/components/DevUserSwitcher";
 import "./globals.css";
 import SupabaseAuthBootstrap from "@/components/SupabaseAuthBootstrap";
 
@@ -63,7 +62,6 @@ export default function RootLayout({
         )}
         {children}
         <BottomNav />
-        <DevUserSwitcher />
       </body>
     </html>
   );
