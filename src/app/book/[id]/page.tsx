@@ -131,6 +131,20 @@ export default function BookDetailPage({
     };
   }, [book]);
 
+  // Hooks must run on every render — keep them above the early returns,
+  // otherwise the render-loading-early-then-render-page sequence trips
+  // React's "rendered more hooks than during the previous render" check
+  // (React error #310). These only depend on currentChildId so computing
+  // them while `book` is still loading is harmless.
+  const isLastBook = useMemo(
+    () => getAllBooks().filter((b) => b.child_id === currentChildId && b.status === "available").length <= 1,
+    [currentChildId]
+  );
+  const hasListedBook = useMemo(
+    () => getAllBooks().some((b) => b.child_id === currentChildId),
+    [currentChildId]
+  );
+
   if (lookupState === "loading") {
     return (
       <main className="flex-1 flex items-center justify-center">
@@ -154,16 +168,6 @@ export default function BookDetailPage({
 
   const isAvailable = book.status === "available";
   const isOwnBook = book.child_id === currentChildId;
-  const isLastBook = useMemo(
-    () => getAllBooks().filter((b) => b.child_id === currentChildId && b.status === "available").length <= 1,
-    [currentChildId]
-  );
-
-  // True if the current user has at least one book listed (available or borrowed out)
-  const hasListedBook = useMemo(
-    () => getAllBooks().some((b) => b.child_id === currentChildId),
-    [currentChildId]
-  );
 
   async function handleRequest() {
     // 1. Local write first: keeps demo/unregistered users on the shelf
