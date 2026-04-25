@@ -78,6 +78,53 @@ export async function listChildrenForCurrentParent(): Promise<DbChild[]> {
 }
 
 /**
+ * Internal: fetch the set of distinct parent_ids in a given society, by
+ * querying the (permissive-SELECT) children table. parents RLS blocks
+ * us from doing this directly — see `isAloneInSociety` doc below.
+ *
+ * Returns an empty set on error or null/empty input. Callers turn this
+ * into either a count (`countDistinctParentsInSociety`) or a "just me?"
+ * check (`isAloneInSociety`).
+ */
+async function getDistinctParentIdsInSociety(
+  societyId: string | null
+): Promise<Set<string>> {
+  if (!societyId) return new Set();
+
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("children")
+    .select("parent_id")
+    .eq("society_id", societyId);
+
+  if (error) {
+    console.error("[children] getDistinctParentIdsInSociety failed:", error);
+    return new Set();
+  }
+
+  const set = new Set<string>();
+  for (const row of data ?? []) {
+    if (row.parent_id) set.add(row.parent_id);
+  }
+  return set;
+}
+
+/**
+ * How many distinct parents are registered in `societyId`?
+ *
+ * Used by the registration success page to render "you're the Xth
+ * member of your society's library club!" Returns 0 on any error —
+ * callers should treat 0 as "unknown, hide the count" rather than
+ * "society is empty," because a fresh registration always has at
+ * least one (the caller themselves).
+ */
+export async function countDistinctParentsInSociety(
+  societyId: string | null
+): Promise<number> {
+  return (await getDistinctParentIdsInSociety(societyId)).size;
+}
+
+/**
  * Is the current parent the only registered parent in `societyId`?
  *
  * We can't count parents directly — parents.RLS restricts SELECT to
@@ -101,24 +148,10 @@ export async function isAloneInSociety(
 ): Promise<boolean> {
   if (!societyId || !myParentId) return false;
 
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("children")
-    .select("parent_id")
-    .eq("society_id", societyId);
-
-  if (error) {
-    console.error("[children] isAloneInSociety failed:", error);
-    return false;
-  }
-
-  const distinctParents = new Set<string>();
-  for (const row of data ?? []) {
-    if (row.parent_id) distinctParents.add(row.parent_id);
-  }
+  const ids = await getDistinctParentIdsInSociety(societyId);
   // Alone = nobody listed OR only me.
-  if (distinctParents.size === 0) return true;
-  if (distinctParents.size === 1 && distinctParents.has(myParentId)) return true;
+  if (ids.size === 0) return true;
+  if (ids.size === 1 && ids.has(myParentId)) return true;
   return false;
 }
 

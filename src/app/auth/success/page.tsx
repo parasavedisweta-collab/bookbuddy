@@ -4,8 +4,32 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getAllBooks, getAllChildren, getCurrentUserSocietyId } from "@/lib/userStore";
 import { getCurrentParent } from "@/lib/supabase/parents";
-import { isAloneInSociety } from "@/lib/supabase/children";
+import {
+  isAloneInSociety,
+  countDistinctParentsInSociety,
+} from "@/lib/supabase/children";
 import ShareAppButton from "@/components/ShareAppButton";
+
+/**
+ * Ordinal suffix for "Xth member" copy. Handles 11/12/13 as the special
+ * "th" cases (eleventh, twelfth, thirteenth) — without this, 11 reads
+ * "11st" which is wrong. For our scale (members per society in low tens)
+ * this matters the moment a society crosses 10 members.
+ */
+function ordinalSuffix(n: number): string {
+  const tens = n % 100;
+  if (tens >= 11 && tens <= 13) return "th";
+  switch (n % 10) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
+}
 
 export default function SuccessPage() {
   const [childName, setChildName] = useState("Reader");
@@ -17,6 +41,11 @@ export default function SuccessPage() {
   // a best-effort fallback until this resolves, but the Supabase answer
   // wins once it arrives.
   const [isAloneSupabase, setIsAloneSupabase] = useState<boolean | null>(null);
+  // Authoritative member count from Supabase (distinct parents in this
+  // society). 0 = unknown / not loaded yet — render time falls back to
+  // the localStorage heuristic so the page is never blank. Once loaded
+  // this is what the "Xth member" copy uses.
+  const [supabaseMemberCount, setSupabaseMemberCount] = useState<number>(0);
 
   useEffect(() => {
     // Child name from registration flow
@@ -37,7 +66,11 @@ export default function SuccessPage() {
   }, []);
 
   // Supabase authoritative check. Runs once on mount — the user just
-  // finished registration so the parent + child rows exist by now.
+  // finished registration so the parent + child rows exist by now. We
+  // fetch both "am I alone?" (drives the celebration / share-CTA copy)
+  // and the distinct-parent count (drives the "Xth member" line) in
+  // parallel so the page settles in one network round-trip's worth of
+  // time.
   useEffect(() => {
     let cancelled = false;
     async function check() {
@@ -48,10 +81,15 @@ export default function SuccessPage() {
           setIsAloneSupabase(null); // can't determine; keep localStorage guess
           return;
         }
-        const alone = await isAloneInSociety(parent.society_id, parent.id);
-        if (!cancelled) setIsAloneSupabase(alone);
+        const [alone, count] = await Promise.all([
+          isAloneInSociety(parent.society_id, parent.id),
+          countDistinctParentsInSociety(parent.society_id),
+        ]);
+        if (cancelled) return;
+        setIsAloneSupabase(alone);
+        setSupabaseMemberCount(count);
       } catch (err) {
-        console.error("[success] isAloneInSociety check failed:", err);
+        console.error("[success] supabase membership check failed:", err);
       }
     }
     check();
@@ -65,6 +103,13 @@ export default function SuccessPage() {
   // while still self-correcting once the real data arrives.
   const isFirst =
     isAloneSupabase !== null ? isAloneSupabase : memberCount <= 1;
+  // Display count uses Supabase when we have it (>0); falls back to
+  // localStorage on cold-load or error. localStorage is the user's own
+  // device-known children — after a sign-out it's just them, so it's
+  // misleading. Authoritative count is the same query that decides
+  // isAlone, so once isAloneSupabase resolves, this is in lockstep.
+  const displayMemberCount =
+    supabaseMemberCount > 0 ? supabaseMemberCount : memberCount;
 
   return (
     <main className="flex-grow flex flex-col items-center justify-center p-6 relative overflow-hidden pb-32"
@@ -120,7 +165,10 @@ export default function SuccessPage() {
             ) : (
               <>
                 You are officially the{" "}
-                <b>{memberCount}{memberCount === 2 ? "nd" : memberCount === 3 ? "rd" : "th"}</b>{" "}
+                <b>
+                  {displayMemberCount}
+                  {ordinalSuffix(displayMemberCount)}
+                </b>{" "}
                 member of your society&apos;s library club!
               </>
             )}
