@@ -42,6 +42,18 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+// No-op fetch handler. We deliberately don't cache (Next.js does its own),
+// but Chrome's PWA install criteria require a registered fetch listener
+// before `beforeinstallprompt` will fire — without this, Android users
+// never see the "Add to Home Screen" bar even though everything else is
+// configured correctly. Letting the request fall through to the network
+// is the right default; we can add real offline behaviour here later.
+self.addEventListener("fetch", () => {
+  // Intentionally empty — calling event.respondWith would commit us to
+  // handling the response. Just having the listener registered is enough
+  // to satisfy the installability check.
+});
+
 self.addEventListener("push", (event) => {
   // Defensive: a malformed or empty push (some platforms wake the SW
   // with no payload to keep subscriptions warm) shouldn't crash the
