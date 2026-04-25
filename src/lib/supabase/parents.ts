@@ -127,6 +127,41 @@ export async function createParent(params: {
 }
 
 /**
+ * Reveal the lister's contact info for a given book — but only when the
+ * current user has an approved (or further-along) borrow request for it.
+ *
+ * Backed by the SECURITY DEFINER RPC `get_lister_contact` (migration 0005),
+ * which short-circuits to "no rows" unless the caller's parent_id has a
+ * borrow_requests row for `bookId` with status in
+ * (approved, picked_up, returned, confirmed_return).
+ *
+ * Returns null when:
+ *   - the caller has no qualifying request (this is the privacy gate)
+ *   - the book doesn't exist
+ *   - the RPC errors
+ *
+ * Callers should treat null as "not yet authorised" and hide contact UI.
+ */
+export async function getListerContactForBook(
+  bookId: string
+): Promise<{ phone: string; name: string | null } | null> {
+  if (!bookId) return null;
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .rpc("get_lister_contact", { book_uuid: bookId });
+
+  if (error) {
+    console.error("[parents] getListerContactForBook failed:", error);
+    return null;
+  }
+  // RPC returns SETOF (table) → array of {phone, name}. Empty when the
+  // caller doesn't qualify, which is the most common path before approval.
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row?.phone) return null;
+  return { phone: row.phone, name: row.name ?? null };
+}
+
+/**
  * Patch the current parent row. Only the current user's row can be updated
  * (enforced by RLS).
  */
