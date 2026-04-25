@@ -198,8 +198,13 @@ export default function AddToHomeScreenPrompt() {
           bottom: "calc(5rem + env(safe-area-inset-bottom, 0px))",
         }}
       >
-        <div className="pointer-events-auto mx-auto max-w-2xl bg-primary-container border border-primary/20 rounded-2xl shadow-lg p-3 flex items-center gap-3">
-          <div className="flex-shrink-0 w-10 h-10 rounded-full bg-primary/15 flex items-center justify-center">
+        {/* Tone-down note: the original used bg-primary-container (#a7fc46
+            lime) which read as neon. Switched to a near-white surface with a
+            soft deep-green border + a 5% deep-green wash to keep the brand
+            identity without making the bar eye-watering. The Add button
+            stays full-saturation primary so the CTA still pops. */}
+        <div className="pointer-events-auto mx-auto max-w-2xl bg-surface-container-lowest border border-primary/30 rounded-2xl shadow-md p-3 flex items-center gap-3" style={{ backgroundImage: "linear-gradient(135deg, rgba(65,112,0,0.06), rgba(65,112,0,0.02))" }}>
+          <div className="flex-shrink-0 w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
             <span
               className="material-symbols-outlined text-primary text-xl"
               style={{ fontVariationSettings: "'FILL' 1" }}
@@ -208,10 +213,10 @@ export default function AddToHomeScreenPrompt() {
             </span>
           </div>
           <div className="flex-1 min-w-0">
-            <p className="font-headline font-bold text-on-primary-container text-sm leading-tight">
+            <p className="font-headline font-bold text-on-surface text-sm leading-tight">
               Add BookBuddy to your home screen
             </p>
-            <p className="text-on-primary-container/80 text-xs leading-snug mt-0.5">
+            <p className="text-on-surface-variant text-xs leading-snug mt-0.5">
               Opens full-screen, just like an app.
             </p>
           </div>
@@ -226,7 +231,7 @@ export default function AddToHomeScreenPrompt() {
             <button
               onClick={handleDismiss}
               aria-label="Dismiss"
-              className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-on-primary-container/70 hover:bg-primary/10 active:scale-95 transition-transform"
+              className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-primary/10 active:scale-95 transition-transform"
             >
               <span className="material-symbols-outlined text-lg">close</span>
             </button>
