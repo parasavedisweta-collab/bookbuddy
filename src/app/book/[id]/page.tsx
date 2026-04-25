@@ -8,6 +8,7 @@ import {
   findActiveRequest,
 } from "@/lib/supabase/requests";
 import { listChildrenForCurrentParent } from "@/lib/supabase/children";
+import { getListerContactForBook } from "@/lib/supabase/parents";
 import { fetchBookById } from "@/lib/supabase/feed";
 import type { Book } from "@/lib/types";
 import Link from "next/link";
@@ -109,7 +110,12 @@ export default function BookDetailPage({
 
   // Supabase-side gate: a user who requested this book from another device
   // shouldn't be offered the Request button again. Runs in addition to the
-  // localStorage check — either source flips the button off.
+  // localStorage check — either source flips the button off. Also captures
+  // the request's *status* so the contact-reveal section below knows whether
+  // the lister has approved (and we should fetch the real phone) or is still
+  // pending (in which case we hide contact entirely).
+  const [supabaseRequestStatus, setSupabaseRequestStatus] =
+    useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     if (!book || !UUID_RE.test(book.id)) return;
@@ -121,7 +127,11 @@ export default function BookDetailPage({
           bookId: book.id,
           borrowerChildId: myChildren[0].id,
         });
-        if (!cancelled && active) setRequestSent(true);
+        if (cancelled) return;
+        if (active) {
+          setRequestSent(true);
+          setSupabaseRequestStatus(active.status);
+        }
       } catch (err) {
         console.error("[book-detail] supabase active-request lookup failed:", err);
       }
@@ -130,6 +140,49 @@ export default function BookDetailPage({
       cancelled = true;
     };
   }, [book]);
+
+  // Lister contact reveal — only populated when the user has an approved
+  // (or further-along) borrow request. Backed by `get_lister_contact` RPC
+  // (migration 0005) which double-checks server-side that the caller has
+  // a qualifying request before returning anything.
+  //
+  // Bug being fixed: previously the WhatsApp + call buttons rendered
+  // unconditionally for any non-own book, with a hardcoded placeholder
+  // phone number ("9876543210"). That implied the lister's contact was
+  // always-public and would have dialled a stranger.
+  const [listerContact, setListerContact] =
+    useState<{ phone: string; name: string | null } | null>(null);
+  // Source-of-truth for "is this request approved enough to reveal contact?"
+  // Prefer the Supabase status (it's the server-authoritative one); fall back
+  // to the local existingRequest for unregistered/demo flows. "approved" and
+  // beyond all qualify — once a book is picked up or returned, we still want
+  // the borrower to be able to coordinate the next step.
+  const effectiveStatus =
+    supabaseRequestStatus ?? existingRequest?.status ?? null;
+  const contactRevealable =
+    effectiveStatus === "approved" ||
+    effectiveStatus === "picked_up" ||
+    effectiveStatus === "returned" ||
+    effectiveStatus === "confirmed_return";
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!book || !contactRevealable || !UUID_RE.test(book.id)) {
+      setListerContact(null);
+      return;
+    }
+    (async () => {
+      try {
+        const contact = await getListerContactForBook(book.id);
+        if (!cancelled) setListerContact(contact);
+      } catch (err) {
+        console.error("[book-detail] lister contact fetch failed:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [book, contactRevealable]);
 
   // Hooks must run on every render — keep them above the early returns,
   // otherwise the render-loading-early-then-render-page sequence trips
@@ -192,9 +245,12 @@ export default function BookDetailPage({
         borrowerChildId,
         listerChildId: book.child_id,
       });
-      if (dbReq && localReq) {
-        // Align ids so the shelf/home merge dedups the two copies.
-        replaceLocalRequestId(localReq.id, dbReq.id);
+      if (dbReq) {
+        setSupabaseRequestStatus(dbReq.status);
+        if (localReq) {
+          // Align ids so the shelf/home merge dedups the two copies.
+          replaceLocalRequestId(localReq.id, dbReq.id);
+        }
       }
     } catch (err) {
       console.error("[book-detail] supabase request insert failed:", err);
@@ -300,23 +356,43 @@ export default function BookDetailPage({
                 )}
               </h4>
             </div>
-            {/* Contact links — only shown for others' books */}
-            {!isOwnBook && (
+            {/* Contact links — privacy-gated. The lister's phone is only
+                rendered after they've approved the borrow request (or further
+                along the flow). Before approval we show a small lock chip so
+                the user understands contact is intentionally withheld, not
+                missing. The actual number comes from the get_lister_contact
+                RPC, which double-checks server-side that the caller has a
+                qualifying request. */}
+            {!isOwnBook && contactRevealable && listerContact?.phone && (
               <div className="flex gap-2">
                 <a
-                  href={whatsappLink("9876543210", `Hi! I'd like to borrow "${book.title}"`)}
+                  href={whatsappLink(
+                    listerContact.phone,
+                    `Hi! I'd like to borrow "${book.title}"`
+                  )}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="w-10 h-10 rounded-full bg-[#25d366] text-white flex items-center justify-center"
+                  aria-label={`WhatsApp ${book.child.name}'s parent`}
                 >
                   <WhatsAppIcon className="w-5 h-5" />
                 </a>
                 <a
-                  href={phoneLink("9876543210")}
+                  href={phoneLink(listerContact.phone)}
                   className="w-10 h-10 rounded-full bg-tertiary text-on-tertiary flex items-center justify-center"
+                  aria-label={`Call ${book.child.name}'s parent`}
                 >
                   <span className="material-symbols-outlined text-xl">call</span>
                 </a>
+              </div>
+            )}
+            {!isOwnBook && !contactRevealable && (
+              <div
+                className="flex items-center gap-1.5 bg-surface-container-high text-outline px-3 py-1.5 rounded-full text-[11px] font-medium"
+                title="Contact is shared once the lister approves your request"
+              >
+                <span className="material-symbols-outlined text-sm">lock</span>
+                Shared on approval
               </div>
             )}
           </div>
