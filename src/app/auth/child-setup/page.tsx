@@ -12,7 +12,11 @@ import {
   type SocietySuggestion,
 } from "@/lib/userStore";
 import { suggestCities, canonicaliseCity } from "@/lib/cities";
-import { findOrCreateSociety } from "@/lib/supabase/societies";
+import {
+  findOrCreateSociety,
+  searchSocietiesWithMembers,
+  type DbSocietyWithMembers,
+} from "@/lib/supabase/societies";
 import { createParent } from "@/lib/supabase/parents";
 import { createChild } from "@/lib/supabase/children";
 import { ensureAnonymousSession } from "@/lib/supabase/client";
@@ -89,6 +93,14 @@ export default function ChildSetupPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [osmResults, setOsmResults] = useState<NominatimResult[]>([]);
   const [neighbourResults, setNeighbourResults] = useState<SocietySuggestion[]>([]);
+  // Supabase-backed society matches with real (cross-device) member counts.
+  // Replaces the localStorage-only neighbour signal for the common case
+  // where the user is registering on a fresh device — without this, a
+  // newcomer to an existing society sees no "verified" badge and risks
+  // creating a duplicate by typing a slightly different name.
+  const [supabaseResults, setSupabaseResults] = useState<DbSocietyWithMembers[]>(
+    []
+  );
   const [searching, setSearching] = useState(false);
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -144,33 +156,58 @@ export default function ChildSetupPage() {
     );
   }
 
-  /** Search — fires both neighbour (local) and OSM (remote) queries */
+  /** Search — fires neighbour (local), Supabase (remote), and OSM (remote) queries in parallel */
   useEffect(() => {
     if (searchQuery.trim().length < 2) {
       setOsmResults([]);
       setNeighbourResults([]);
+      setSupabaseResults([]);
       return;
     }
 
-    // Neighbour search is synchronous from localStorage
+    // Neighbour search is synchronous from localStorage. Useful as a
+    // fast first paint and for legacy demo data; the Supabase results
+    // below supersede it semantically once they arrive.
     setNeighbourResults(searchSocieties(searchQuery).slice(0, 5));
 
-    // OSM search — debounced
+    // Both remote queries are debounced together so we don't spam either
+    // backend on every keystroke. Run them in parallel — they're
+    // independent and the slower of the two sets the user-visible
+    // latency. Each guards its own try/catch so a failure on one
+    // doesn't blank the other.
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
-    searchTimeout.current = setTimeout(async () => {
+    searchTimeout.current = setTimeout(() => {
       setSearching(true);
-      try {
-        const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=json&addressdetails=1&limit=5`,
-          { headers: { "Accept-Language": "en" } }
-        );
-        const data: NominatimResult[] = await res.json();
-        setOsmResults(data);
-      } catch {
-        // silent
-      } finally {
-        setSearching(false);
-      }
+      const queryAtFire = searchQuery;
+
+      const osmPromise = (async () => {
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(queryAtFire)}&format=json&addressdetails=1&limit=5`,
+            { headers: { "Accept-Language": "en" } }
+          );
+          const data: NominatimResult[] = await res.json();
+          // Stale-response guard: if the user kept typing while we were
+          // in flight, the input no longer matches what we asked for —
+          // dropping the result keeps the dropdown coherent.
+          if (queryAtFire === searchQuery) setOsmResults(data);
+        } catch {
+          // silent — picker still works without map results
+        }
+      })();
+
+      const supabasePromise = (async () => {
+        try {
+          const data = await searchSocietiesWithMembers(queryAtFire);
+          if (queryAtFire === searchQuery) setSupabaseResults(data);
+        } catch (err) {
+          console.warn("[child-setup] supabase society search failed:", err);
+        }
+      })();
+
+      Promise.all([osmPromise, supabasePromise]).finally(() => {
+        if (queryAtFire === searchQuery) setSearching(false);
+      });
     }, 400);
   }, [searchQuery]);
 
@@ -200,6 +237,24 @@ export default function ChildSetupPage() {
 
   function pickNeighbour(s: SocietySuggestion) {
     setChosen({ id: s.id, name: s.name, city: s.city, source: "neighbour" });
+    clearSearch();
+  }
+  /**
+   * Pick a Supabase-known society. The exact name + city we store here
+   * are what the existing Supabase row already has, so on submit
+   * `findOrCreateSociety` will ILIKE-match it and reuse the same UUID
+   * — no risk of a duplicate row even though we still go through the
+   * upsert path. We tag source as "neighbour" so the chosen-card UI
+   * shows the same friendly "Verified by your neighbours" wording the
+   * picker promised.
+   */
+  function pickSupabase(s: DbSocietyWithMembers) {
+    setChosen({
+      id: societyNameToId(s.name, s.city),
+      name: s.name,
+      city: s.city,
+      source: "neighbour",
+    });
     clearSearch();
   }
   function pickOsm(r: NominatimResult) {
@@ -235,6 +290,7 @@ export default function ChildSetupPage() {
     setSearchQuery("");
     setOsmResults([]);
     setNeighbourResults([]);
+    setSupabaseResults([]);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -368,7 +424,37 @@ export default function ChildSetupPage() {
     setLoading(false);
   }
 
-  const hasAnyResults = neighbourResults.length > 0 || osmResults.length > 0;
+  // Filter localStorage neighbour results down to only those NOT already
+  // surfaced by Supabase. Match on (lower(name), lower(city)) — same key
+  // findOrCreateSociety uses, so what looks "the same" to the user is
+  // the same row in the picker. Without this dedupe, the localStorage
+  // entry left over from a previous session shows up next to the
+  // authoritative Supabase row with stale member counts.
+  const supabaseKeys = new Set(
+    supabaseResults.map(
+      (s) => `${s.name.toLowerCase()}|${s.city.toLowerCase()}`
+    )
+  );
+  const dedupedNeighbours = neighbourResults.filter(
+    (n) => !supabaseKeys.has(`${n.name.toLowerCase()}|${n.city.toLowerCase()}`)
+  );
+  // Also hide OSM hits that just duplicate a Supabase row by name —
+  // OSM verbosity ("Society X, Sector 5, City") doesn't match exactly,
+  // so we use a softer "name contains" rule. Prevents the duplicate-row
+  // creation foot-gun (user picks OSM variant, findOrCreateSociety's
+  // ILIKE misses, new society row gets inserted).
+  const supabaseNames = supabaseResults.map((s) => s.name.toLowerCase());
+  const dedupedOsm = osmResults.filter((r) => {
+    const osmName = extractSocietyName(r).toLowerCase();
+    return !supabaseNames.some(
+      (n) => osmName.includes(n) || n.includes(osmName)
+    );
+  });
+
+  const hasAnyResults =
+    supabaseResults.length > 0 ||
+    dedupedNeighbours.length > 0 ||
+    dedupedOsm.length > 0;
   const showResults = searchQuery.trim().length >= 2;
 
   return (
@@ -526,20 +612,87 @@ export default function ChildSetupPage() {
                 {showResults && (
                   <div className="absolute z-20 w-full mt-1 bg-surface-container-high rounded-xl shadow-lg overflow-hidden border border-outline-variant/20 divide-y divide-outline-variant/10">
 
-                    {/* 1. Verified neighbour matches (≥3 members) */}
-                    {neighbourResults.filter((s) => s.verified).length > 0 && (
+                    {/* 1. Supabase-verified matches (≥3 distinct parents).
+                           These are authoritative cross-device counts —
+                           anyone registering on a fresh device will still
+                           see existing societies as "verified". This is the
+                           section that fixes the Mukesh-style "first member!"
+                           regression after a sign-out + re-register. */}
+                    {supabaseResults.filter((s) => s.memberCount >= 3).length > 0 && (
                       <div>
                         <p className="px-4 pt-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-primary">
                           ✓ Verified by neighbours
                         </p>
-                        {neighbourResults.filter((s) => s.verified).map((s) => (
+                        {supabaseResults
+                          .filter((s) => s.memberCount >= 3)
+                          .map((s) => (
+                            <button
+                              key={`sb-${s.id}`}
+                              type="button"
+                              onClick={() => pickSupabase(s)}
+                              className="w-full text-left px-4 py-3 text-sm hover:bg-primary-container/30 transition-colors flex items-center gap-3"
+                            >
+                              <span className="material-symbols-outlined text-primary">verified</span>
+                              <div className="flex-1 min-w-0">
+                                <span className="font-semibold text-on-surface block truncate">{s.name}</span>
+                                <span className="text-on-surface-variant text-xs block truncate">
+                                  {s.memberCount} neighbours here · {s.city}
+                                </span>
+                              </div>
+                            </button>
+                          ))}
+                      </div>
+                    )}
+
+                    {/* 2. Supabase soft matches — society exists but with
+                           1–2 parents (or 0, which only happens if a user
+                           added a society row but no child yet — rare, but
+                           still worth surfacing so they don't dupe it). */}
+                    {supabaseResults.filter((s) => s.memberCount < 3).length > 0 && (
+                      <div>
+                        <p className="px-4 pt-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">
+                          Listed by a neighbour
+                        </p>
+                        {supabaseResults
+                          .filter((s) => s.memberCount < 3)
+                          .map((s) => (
+                            <button
+                              key={`sb-${s.id}`}
+                              type="button"
+                              onClick={() => pickSupabase(s)}
+                              className="w-full text-left px-4 py-3 text-sm hover:bg-primary-container/30 transition-colors flex items-center gap-3"
+                            >
+                              <span className="material-symbols-outlined text-on-surface-variant">groups</span>
+                              <div className="flex-1 min-w-0">
+                                <span className="font-semibold text-on-surface block truncate">{s.name}</span>
+                                <span className="text-on-surface-variant text-xs block truncate">
+                                  {s.memberCount === 0
+                                    ? `Already on BookBuddy · ${s.city}`
+                                    : `${s.memberCount} neighbour${s.memberCount === 1 ? "" : "s"} here · ${s.city}`}
+                                </span>
+                              </div>
+                            </button>
+                          ))}
+                      </div>
+                    )}
+
+                    {/* 3. Legacy localStorage neighbour matches — only those
+                           NOT already in supabaseResults (deduped above).
+                           Mostly empty in practice; carries pre-Supabase
+                           demo data that hasn't been backfilled yet. */}
+                    {dedupedNeighbours.filter((s) => s.verified).length > 0 && (
+                      <div>
+                        <p className="px-4 pt-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">
+                          On this device
+                        </p>
+                        {dedupedNeighbours.filter((s) => s.verified).map((s) => (
                           <button
                             key={s.id}
                             type="button"
                             onClick={() => pickNeighbour(s)}
                             className="w-full text-left px-4 py-3 text-sm hover:bg-primary-container/30 transition-colors flex items-center gap-3"
                           >
-                            <span className="material-symbols-outlined text-primary">verified</span>
+                            <span className="material-symbols-outlined text-on-surface-variant">groups</span>
                             <div className="flex-1 min-w-0">
                               <span className="font-semibold text-on-surface block truncate">{s.name}</span>
                               <span className="text-on-surface-variant text-xs block truncate">
@@ -550,14 +703,12 @@ export default function ChildSetupPage() {
                         ))}
                       </div>
                     )}
-
-                    {/* 2. Soft neighbour matches (1–2 members) */}
-                    {neighbourResults.filter((s) => !s.verified).length > 0 && (
+                    {dedupedNeighbours.filter((s) => !s.verified).length > 0 && (
                       <div>
                         <p className="px-4 pt-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">
-                          Listed by a neighbour
+                          Saved on this device
                         </p>
-                        {neighbourResults.filter((s) => !s.verified).map((s) => (
+                        {dedupedNeighbours.filter((s) => !s.verified).map((s) => (
                           <button
                             key={s.id}
                             type="button"
@@ -576,13 +727,15 @@ export default function ChildSetupPage() {
                       </div>
                     )}
 
-                    {/* 3. Map (OSM) results */}
-                    {osmResults.length > 0 && (
+                    {/* 4. Map (OSM) results — deduped against Supabase by
+                           name substring. Last because they have the
+                           weakest signal (no member info at all). */}
+                    {dedupedOsm.length > 0 && (
                       <div>
                         <p className="px-4 pt-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">
                           From map
                         </p>
-                        {osmResults.map((r) => (
+                        {dedupedOsm.map((r) => (
                           <button
                             key={r.place_id}
                             type="button"
