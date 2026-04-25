@@ -13,6 +13,7 @@ import { getCurrentParent } from "@/lib/supabase/parents";
 import { fetchMyRequests } from "@/lib/supabase/requests";
 import ShareAppButton from "@/components/ShareAppButton";
 import NotificationBell from "@/components/NotificationBell";
+import ListBookFab from "@/components/ListBookFab";
 import type { Genre, Book, BorrowRequest } from "@/lib/types";
 
 export default function HomePage() {
@@ -37,6 +38,10 @@ export default function HomePage() {
   // the feed. null while the Supabase query is in flight so we don't flash
   // the banner for an established society on first paint.
   const [isAlone, setIsAlone] = useState<boolean | null>(null);
+  // Registered = parent row exists with a society_id. Drives the floating
+  // "List a book" FAB — for unregistered visitors /book/list bounces them
+  // through registration, so the CTA is misleading rather than helpful.
+  const [isRegistered, setIsRegistered] = useState(false);
 
   useEffect(() => {
     const refresh = () => {
@@ -113,13 +118,18 @@ export default function HomePage() {
         if (cancelled) return;
         if (!parent?.society_id) {
           setIsAlone(false);
+          setIsRegistered(false);
           return;
         }
+        setIsRegistered(true);
         const alone = await isAloneInSociety(parent.society_id, parent.id);
         if (!cancelled) setIsAlone(alone);
       } catch (err) {
         console.error("[home] isAloneInSociety check failed:", err);
-        if (!cancelled) setIsAlone(false);
+        if (!cancelled) {
+          setIsAlone(false);
+          setIsRegistered(false);
+        }
       }
     }
     check();
@@ -327,6 +337,11 @@ export default function HomePage() {
           </div>
         )}
       </section>
+
+      {/* Floating "List a book" CTA. Hidden for unregistered visitors —
+          /book/list bounces them through registration, so dangling the
+          shortcut would be misleading. */}
+      {isRegistered && <ListBookFab />}
     </main>
   );
 }
