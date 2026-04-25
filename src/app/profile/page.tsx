@@ -16,6 +16,7 @@ import { getCurrentParent } from "@/lib/supabase/parents";
 import { isAloneInSociety } from "@/lib/supabase/children";
 import Button from "@/components/ui/Button";
 import ShareAppButton from "@/components/ShareAppButton";
+import PushSettingsToggle from "@/components/PushSettingsToggle";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -207,6 +208,9 @@ export default function ProfilePage() {
           </Link>
           {/* Always-on share CTA, regardless of society-alone status. */}
           <ShareAppButton variant="default" />
+          {/* Push notification settings — full state machine inside
+              (unsupported / iOS-needs-PWA / denied / off / on). */}
+          <PushSettingsToggle />
           <button
             onClick={handleSignOut}
             disabled={signingOut}

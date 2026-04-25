@@ -14,6 +14,7 @@ import type { Book } from "@/lib/types";
 import Link from "next/link";
 import Button from "@/components/ui/Button";
 import WhatsAppIcon from "@/components/ui/WhatsAppIcon";
+import PushPermissionNudge from "@/components/PushPermissionNudge";
 import { whatsappLink, phoneLink } from "@/lib/helpers";
 
 /**
@@ -453,19 +454,28 @@ export default function BookDetailPage({
             Request book
           </Button>
         ) : requestSent ? (
-          <div className="bg-primary-container p-5 rounded-xl text-center">
-            <span
-              className="material-symbols-outlined text-primary text-4xl mb-2 block"
-              style={{ fontVariationSettings: "'FILL' 1" }}
-            >
-              check_circle
-            </span>
-            <p className="font-headline font-bold text-on-primary-container">
-              Request sent!
-            </p>
-            <p className="text-sm text-on-primary-container/70 mt-1">
-              The lister will be notified. You&apos;ll hear back within 7 days.
-            </p>
+          <div className="space-y-3">
+            <div className="bg-primary-container p-5 rounded-xl text-center">
+              <span
+                className="material-symbols-outlined text-primary text-4xl mb-2 block"
+                style={{ fontVariationSettings: "'FILL' 1" }}
+              >
+                check_circle
+              </span>
+              <p className="font-headline font-bold text-on-primary-container">
+                Request sent!
+              </p>
+              <p className="text-sm text-on-primary-container/70 mt-1">
+                The lister will be notified. You&apos;ll hear back within 7 days.
+              </p>
+            </div>
+            {/* Highest-intent moment to ask for push: the user just took
+                the action that creates an asynchronous wait, so they
+                actively want to know when it resolves. */}
+            <PushPermissionNudge
+              headline="Get notified when the lister replies"
+              subhead={`We'll buzz you the moment ${book.child?.name ?? "they"} approve or decline.`}
+            />
           </div>
         ) : (
           <div className="bg-surface-container-high p-5 rounded-xl text-center">
