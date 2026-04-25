@@ -87,6 +87,72 @@ export async function searchSocietiesByName(
 }
 
 /**
+ * A society row plus the count of distinct parents who've registered
+ * a child in it. Used by the registration picker to show "verified by
+ * neighbours" / "listed by a neighbour" social-proof badges with real
+ * cross-device numbers (the previous picker only counted users from
+ * the current device's localStorage, which silently broke for any
+ * second-device or post-sign-out registration).
+ */
+export interface DbSocietyWithMembers extends DbSociety {
+  memberCount: number;
+}
+
+/**
+ * Search societies by name + member-count, sorted with the most
+ * populated society first. Built on top of `searchSocietiesByName`
+ * so the ILIKE/escape logic stays in one place.
+ *
+ * Implementation: one query for the matching society rows, then a
+ * second query against `children` (permissive SELECT RLS, carries
+ * denormalised society_id) to count distinct parent_ids per society.
+ * Two round-trips not one — Postgrest can't `count(distinct ...)`
+ * cleanly without an RPC, and at picker scale (≤20 societies, ≤dozens
+ * of members each) the second query is small. If society + member
+ * counts ever balloon, swap this for a SECURITY DEFINER RPC.
+ *
+ * On the second query failing, we still return the society list with
+ * memberCount=0 — the picker should at least show the society names
+ * even if the badges go missing.
+ */
+export async function searchSocietiesWithMembers(
+  query: string
+): Promise<DbSocietyWithMembers[]> {
+  const societies = await searchSocietiesByName(query);
+  if (societies.length === 0) return [];
+
+  const supabase = getSupabase();
+  const ids = societies.map((s) => s.id);
+  const { data: childRows, error } = await supabase
+    .from("children")
+    .select("society_id, parent_id")
+    .in("society_id", ids);
+
+  if (error) {
+    console.error(
+      "[societies] member-count fetch failed; returning bare societies:",
+      error
+    );
+    return societies.map((s) => ({ ...s, memberCount: 0 }));
+  }
+
+  const bySociety = new Map<string, Set<string>>();
+  for (const row of childRows ?? []) {
+    if (!row.society_id || !row.parent_id) continue;
+    let set = bySociety.get(row.society_id);
+    if (!set) {
+      set = new Set();
+      bySociety.set(row.society_id, set);
+    }
+    set.add(row.parent_id);
+  }
+
+  return societies
+    .map((s) => ({ ...s, memberCount: bySociety.get(s.id)?.size ?? 0 }))
+    .sort((a, b) => b.memberCount - a.memberCount);
+}
+
+/**
  * Look up a society by exact (case-insensitive) name + city.
  * If none found, insert a new row and return it.
  *
