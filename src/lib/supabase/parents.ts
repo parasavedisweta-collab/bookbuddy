@@ -1,12 +1,10 @@
 /**
  * Supabase-backed parents data layer.
  *
- * One-to-one with auth.users via parents.id = auth.uid(). Each browser's
- * anonymous JWT maps to at most one parent row. Phone numbers are
- * unique across the table (Postgres UNIQUE constraint), so a second
- * device trying to register the same phone will fail at INSERT —
- * that's Path A's known limitation until we add real auth (magic link
- * / WhatsApp OTP) for cross-device identity.
+ * One-to-one with auth.users via parents.id = auth.uid(). After
+ * migration 0007 the auth model is Google OAuth + email-OTP — email
+ * is the cross-device identity, phone is a contact field only
+ * (no longer UNIQUE, no longer a credential).
  *
  * RLS policies (see 0001_init.sql):
  *   SELECT / INSERT / UPDATE only where id = auth.uid().
@@ -16,21 +14,21 @@
 
 import { getSupabase } from "./client";
 
-/** Row shape matching public.parents. */
+/** Row shape matching public.parents (post-0007). */
 export interface DbParent {
   id: string;
-  phone: string;
-  name: string | null;
-  email: string | null;
+  email: string;
+  phone: string | null;
   society_id: string | null;
   created_at: string;
 }
 
-const COLUMNS = "id, phone, name, email, society_id, created_at" as const;
+const COLUMNS = "id, email, phone, society_id, created_at" as const;
 
 /**
  * Fetch the parent row belonging to the current auth.uid(), if any.
- * Returns null for a fresh anonymous user who hasn't completed registration.
+ * Returns null when there is no session, or the user is signed in
+ * but hasn't completed registration (no parents row yet).
  */
 export async function getCurrentParent(): Promise<DbParent | null> {
   const supabase = getSupabase();
@@ -53,57 +51,40 @@ export async function getCurrentParent(): Promise<DbParent | null> {
 }
 
 /**
- * Cross-row phone lookup. Uses the SECURITY DEFINER RPC
- * `is_phone_registered` (see 0001_init.sql) so we don't need a
- * blanket SELECT policy on parents — only true/false leaks.
+ * Create the parent row for the currently-authenticated user.
+ * Asserts parents.id = auth.uid() (the RLS policy will reject
+ * anything else).
  *
- * Normalise the phone to digits before calling; callers should
- * do the same transform consistently so matches succeed.
- */
-export async function isPhoneRegistered(phone: string): Promise<boolean> {
-  const digits = phone.replace(/\D/g, "");
-  if (!digits) return false;
-
-  const supabase = getSupabase();
-  const { data, error } = await supabase.rpc("is_phone_registered", {
-    check_phone: digits,
-  });
-
-  if (error) {
-    console.error("[parents] isPhoneRegistered failed:", error);
-    // Fail closed: treat lookup failure as "unknown, let them continue"
-    // — the INSERT later will catch a real collision via UNIQUE.
-    return false;
-  }
-  return Boolean(data);
-}
-
-/**
- * Create the parent row for the current anonymous user.
- * Asserts parents.id = auth.uid() (the RLS policy will reject anything else).
+ * `email` is sourced from auth.user().email — caller doesn't pass
+ * it, we read it ourselves to guarantee it matches the auth
+ * identity. `phone` is the contact number captured at registration.
  *
  * Returns null on error. Possible failures:
- *   - phone already in use (UNIQUE violation) — another device registered it
- *   - no active session — bootstrap hasn't run yet
+ *   - no active session (caller should redirect to /auth/sign-in)
+ *   - email collision (same email already has a parent row — shouldn't
+ *     happen since email = auth identity, but guard surfaces it)
  *   - society_id doesn't exist (FK violation)
  */
 export async function createParent(params: {
   phone: string;
-  name?: string | null;
-  society_id?: string | null;
-  email?: string | null;
+  society_id: string;
 }): Promise<DbParent | null> {
-  const digits = params.phone.replace(/\D/g, "");
-  if (!digits) {
+  const phoneDigits = params.phone.replace(/\D/g, "");
+  if (!phoneDigits) {
     console.error("[parents] createParent: empty phone after normalisation");
     return null;
   }
 
   const supabase = getSupabase();
   const { data: sessionData } = await supabase.auth.getSession();
-  const uid = sessionData.session?.user?.id;
-  if (!uid) {
-    console.error("[parents] createParent: no session — is bootstrap running?");
+  const session = sessionData.session;
+  const uid = session?.user?.id;
+  const email = session?.user?.email;
+
+  if (!uid || !email) {
+    console.error(
+      "[parents] createParent: no authenticated session — caller should redirect to /auth/sign-in"
+    );
     return null;
   }
 
@@ -111,10 +92,9 @@ export async function createParent(params: {
     .from("parents")
     .insert({
       id: uid,
-      phone: digits,
-      name: params.name?.trim() || null,
-      email: params.email?.trim() || null,
-      society_id: params.society_id ?? null,
+      email,
+      phone: phoneDigits,
+      society_id: params.society_id,
     })
     .select(COLUMNS)
     .single();
@@ -130,21 +110,20 @@ export async function createParent(params: {
  * Reveal the lister's contact info for a given book — but only when the
  * current user has an approved (or further-along) borrow request for it.
  *
- * Backed by the SECURITY DEFINER RPC `get_lister_contact` (migration 0005),
- * which short-circuits to "no rows" unless the caller's parent_id has a
- * borrow_requests row for `bookId` with status in
+ * Backed by the SECURITY DEFINER RPC `get_lister_contact` (migration
+ * 0007 form), which short-circuits to "no rows" unless the caller's
+ * parent_id has a borrow_requests row for `bookId` with status in
  * (approved, picked_up, returned, confirmed_return).
  *
- * Returns null when:
- *   - the caller has no qualifying request (this is the privacy gate)
- *   - the book doesn't exist
- *   - the RPC errors
+ * Returns null when the caller has no qualifying request, the book
+ * doesn't exist, or the RPC errors.
  *
- * Callers should treat null as "not yet authorised" and hide contact UI.
+ * The RPC now returns the lister's CHILD name (not parent name) —
+ * matches the UI's "Listed by Aanya" labelling everywhere else.
  */
 export async function getListerContactForBook(
   bookId: string
-): Promise<{ phone: string; name: string | null } | null> {
+): Promise<{ phone: string; childName: string | null } | null> {
   if (!bookId) return null;
   const supabase = getSupabase();
   const { data, error } = await supabase
@@ -154,19 +133,22 @@ export async function getListerContactForBook(
     console.error("[parents] getListerContactForBook failed:", error);
     return null;
   }
-  // RPC returns SETOF (table) → array of {phone, name}. Empty when the
-  // caller doesn't qualify, which is the most common path before approval.
+  // RPC returns SETOF (table) → array of {phone, child_name}. Empty
+  // when the caller doesn't qualify, which is the most common path
+  // before approval.
   const row = Array.isArray(data) ? data[0] : null;
   if (!row?.phone) return null;
-  return { phone: row.phone, name: row.name ?? null };
+  return { phone: row.phone, childName: row.child_name ?? null };
 }
 
 /**
- * Patch the current parent row. Only the current user's row can be updated
- * (enforced by RLS).
+ * Patch the current parent row. Only the current user's row can be
+ * updated (enforced by RLS). Email is intentionally NOT patchable
+ * here — email is the auth identity and must always match
+ * auth.users.email. Society + phone are user-editable contact fields.
  */
 export async function updateCurrentParent(
-  patch: Partial<Pick<DbParent, "name" | "email" | "society_id">>
+  patch: Partial<Pick<DbParent, "phone" | "society_id">>
 ): Promise<DbParent | null> {
   const supabase = getSupabase();
   const { data: sessionData } = await supabase.auth.getSession();

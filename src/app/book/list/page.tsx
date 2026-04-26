@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
@@ -15,6 +15,8 @@ import { GENRES, AGE_RANGES, type Genre, type Book } from "@/lib/types";
 import { saveListedBook, replaceLocalBookId } from "@/lib/userStore";
 import { createBook } from "@/lib/supabase/books";
 import { listChildrenForCurrentParent } from "@/lib/supabase/children";
+import { getCurrentUserId } from "@/lib/supabase/client";
+import { getCurrentParent } from "@/lib/supabase/parents";
 
 type Step = "scan" | "details" | "confirm";
 /** How much to trust the auto-filled metadata. `high` is not shown in UI. */
@@ -70,6 +72,32 @@ export default function ListBookPage() {
 
   const [step, setStep] = useState<Step>("scan");
   const [loading, setLoading] = useState(false);
+
+  // Auth gate — listing a book requires both a session (createBook
+  // RLS depends on auth.uid() being a child's parent) AND a completed
+  // registration (we need a child row to attach the book to). Push
+  // unauthenticated users to /auth/sign-in; push authenticated-but-
+  // unregistered users to /auth/child-setup.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const uid = await getCurrentUserId();
+      if (cancelled) return;
+      if (!uid) {
+        router.replace("/auth/sign-in");
+        return;
+      }
+      const parent = await getCurrentParent();
+      if (cancelled) return;
+      if (!parent) {
+        router.replace("/auth/child-setup");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
   const [loadingMessage, setLoadingMessage] = useState("");
   const [scanError, setScanError] = useState<string | null>(null);
   // `listing` drives the List-This-Book button's own spinner/disabled state.

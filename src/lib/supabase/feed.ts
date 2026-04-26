@@ -26,7 +26,7 @@ import {
 } from "./books";
 import { getCurrentParent } from "./parents";
 import { listChildrenForCurrentParent, type DbChild } from "./children";
-import type { Book, BookStatus, Child, Genre } from "../types";
+import type { Book, BookStatus, Genre } from "../types";
 
 function mapStatus(s: DbBook["status"]): BookStatus {
   // "removed" rows are filtered out by the underlying queries, so we should
@@ -71,7 +71,6 @@ export function mapFeedRowToBook(row: DbBookWithListerContext): Book {
       id: row.child.id,
       parent_id: row.child.parent_id,
       name: row.child.name,
-      age_group: row.child.age_group as Child["age_group"],
       bookbuddy_id: "",
       created_at: "",
     },
@@ -109,7 +108,6 @@ export function mapPlainBookToBook(
           id: opts.child.id,
           parent_id: opts.child.parent_id,
           name: opts.child.name,
-          age_group: opts.child.age_group,
           bookbuddy_id: opts.child.bookbuddy_id,
           created_at: opts.child.created_at,
         }
@@ -157,7 +155,7 @@ export async function fetchBookById(id: string): Promise<Book | null> {
       `id, child_id, title, author, isbn, description, category,
        cover_url, cover_source, status, listed_at, metadata,
        child:children!inner(
-         id, name, emoji, age_group, society_id, parent_id
+         id, name, emoji, society_id, parent_id
        )`
     )
     .eq("id", id)
