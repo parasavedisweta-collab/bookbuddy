@@ -51,6 +51,10 @@ export default function PushPermissionNudge({ headline, subhead }: Props) {
   const [state, setState] = useState<PushState | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [working, setWorking] = useState(false);
+  // Inline error surfaced to the user after a failed enable. Cleared on
+  // the next attempt. Without this, a silent false return from
+  // subscribeToPush() leaves the user re-tapping with no feedback.
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (dismissedRecently()) {
@@ -80,15 +84,34 @@ export default function PushPermissionNudge({ headline, subhead }: Props) {
 
   async function enable() {
     setWorking(true);
+    setError(null);
     const ok = await subscribeToPush();
+    // Re-read state regardless of outcome. The browser may have moved
+    // permission to "denied" (if the user clicked "Block") or
+    // "granted-subscribed" (we succeeded but the upsert failed and we
+    // returned false) — either way the nudge should disappear, not
+    // loop the user back to a button that won't work.
+    const next = await getPushState();
+    setState(next);
     setWorking(false);
-    if (ok) {
+
+    if (ok || next === "granted-subscribed") {
       // Subscribed — collapse the nudge, don't write the dismiss key
       // (state will read as granted-subscribed on the next mount).
       setDismissed(true);
+      return;
     }
-    // If !ok, leave the nudge up so the user can retry. subscribeToPush
-    // already console.errors the failure reason for diagnostics.
+    if (next === "denied") {
+      // Permission denied at OS level. The render guards above will hide
+      // the nudge on next paint via the state change; nothing else to do.
+      return;
+    }
+    // Genuinely failed but recoverable — surface a hint so the user knows
+    // the tap did something. Most common cause is a missing VAPID key on
+    // the deployment, which only the developer can fix.
+    setError(
+      "Couldn't turn on notifications. Check your browser's notification settings and try again."
+    );
   }
 
   // iOS-not-installed branch: we can't subscribe, so route to A2HS.
@@ -157,6 +180,11 @@ export default function PushPermissionNudge({ headline, subhead }: Props) {
             Not now
           </button>
         </div>
+        {error && (
+          <p className="text-xs text-error mt-2 leading-snug" role="alert">
+            {error}
+          </p>
+        )}
       </div>
     </div>
   );
