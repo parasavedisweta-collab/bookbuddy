@@ -8,6 +8,7 @@ import {
   findActiveRequest,
 } from "@/lib/supabase/requests";
 import { listChildrenForCurrentParent } from "@/lib/supabase/children";
+import { listBooksForChild } from "@/lib/supabase/books";
 import { getListerContactForBook } from "@/lib/supabase/parents";
 import { fetchBookById } from "@/lib/supabase/feed";
 import type { Book } from "@/lib/types";
@@ -194,10 +195,57 @@ export default function BookDetailPage({
     () => getAllBooks().filter((b) => b.child_id === currentChildId && b.status === "available").length <= 1,
     [currentChildId]
   );
-  const hasListedBook = useMemo(
+  // Borrow gate: "you must list at least one book before borrowing".
+  //
+  // Synchronous localStorage check is the fast path (covers demo data and
+  // books listed on this device pre-Supabase). For real users the books
+  // live in Supabase and the localStorage cache is empty, so we ALSO
+  // resolve async by listing the current parent's children + their books.
+  // Either source flips the gate off — null while we wait, true once we
+  // know they have at least one book, false only after both sources have
+  // come back empty.
+  //
+  // We default the initial state to `true` (no gate) on the synchronous
+  // localStorage hit; for users without any local books we start `null`
+  // and the JSX below renders a small placeholder until the Supabase
+  // round-trip resolves. That avoids flashing the gate at users who do
+  // have books listed in Supabase only.
+  const localHasListedBook = useMemo(
     () => getAllBooks().some((b) => b.child_id === currentChildId),
     [currentChildId]
   );
+  const [hasListedBook, setHasListedBook] = useState<boolean | null>(
+    localHasListedBook ? true : null
+  );
+  useEffect(() => {
+    if (localHasListedBook) {
+      setHasListedBook(true);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const myChildren = await listChildrenForCurrentParent();
+        if (cancelled) return;
+        if (myChildren.length === 0) {
+          setHasListedBook(false);
+          return;
+        }
+        // Parallel: any child with at least one book unlocks borrowing.
+        const perChild = await Promise.all(
+          myChildren.map((c) => listBooksForChild(c.id))
+        );
+        if (cancelled) return;
+        setHasListedBook(perChild.some((books) => books.length > 0));
+      } catch (err) {
+        console.error("[book-detail] hasListedBook lookup failed:", err);
+        if (!cancelled) setHasListedBook(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [localHasListedBook]);
 
   if (lookupState === "loading") {
     return (
@@ -427,7 +475,15 @@ export default function BookDetailPage({
               </button>
             )}
           </div>
-        ) : !hasListedBook ? (
+        ) : hasListedBook === null ? (
+          /* Resolving Supabase round-trip — show a neutral placeholder
+             rather than flashing the gate or the request button. */
+          <div className="bg-surface-container-low p-5 rounded-xl text-center text-on-surface-variant text-sm">
+            <span className="material-symbols-outlined animate-pulse">
+              hourglass_empty
+            </span>
+          </div>
+        ) : hasListedBook === false ? (
           /* Gate: user must list at least one book before borrowing */
           <div className="space-y-4">
             <div className="bg-secondary-container/30 border border-secondary/20 rounded-xl p-5 flex items-start gap-3">
