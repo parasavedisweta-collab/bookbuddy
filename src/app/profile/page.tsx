@@ -115,9 +115,9 @@ export default function ProfilePage() {
    * Order matters: localStorage first so any race-y effect that re-reads
    * during the Supabase network round-trip sees an empty store. Then
    * supabase.auth.signOut() tears down the session. We navigate to
-   * /auth/register because SupabaseAuthBootstrap will immediately mint a
-   * fresh anonymous session on the next mount — without an explicit push
-   * the user lands on /profile with mismatched identity.
+   * /auth/sign-in (post-0007 entry point) — there's no longer an
+   * anonymous-session bootstrap to land on, so the user explicitly
+   * picks Google or email-OTP to come back.
    *
    * We do NOT await the supabase call blocking navigation: the
    * local wipe + router push is the user-visible action. A transient
@@ -135,8 +135,8 @@ export default function ProfilePage() {
       console.error("[profile] sign-out failed:", err);
     } finally {
       // Whether or not signOut succeeded, the local state is blanked.
-      // Push to the register entry so the next screen is deterministic.
-      router.push("/auth/register");
+      // Push to the sign-in entry so the next screen is deterministic.
+      router.push("/auth/sign-in");
     }
   }
 

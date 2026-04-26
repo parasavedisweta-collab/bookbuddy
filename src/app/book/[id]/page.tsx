@@ -152,7 +152,7 @@ export default function BookDetailPage({
   // phone number ("9876543210"). That implied the lister's contact was
   // always-public and would have dialled a stranger.
   const [listerContact, setListerContact] =
-    useState<{ phone: string; name: string | null } | null>(null);
+    useState<{ phone: string; childName: string | null } | null>(null);
   // Source-of-truth for "is this request approved enough to reveal contact?"
   // Prefer the Supabase status (it's the server-authoritative one); fall back
   // to the local existingRequest for unregistered/demo flows. "approved" and

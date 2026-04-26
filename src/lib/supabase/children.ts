@@ -14,7 +14,6 @@
 "use client";
 
 import { getSupabase } from "./client";
-import type { Child } from "../types";
 
 /**
  * Row shape matching public.children.
@@ -29,14 +28,15 @@ export interface DbChild {
   parent_id: string;
   name: string;
   emoji: string | null;
-  age_group: Child["age_group"];
   bookbuddy_id: string;
   society_id: string;
   created_at: string;
 }
 
+// age_group dropped in migration 0007 — was never read on the filter
+// side and added unwarranted friction at registration.
 const COLUMNS =
-  "id, parent_id, name, emoji, age_group, bookbuddy_id, society_id, created_at" as const;
+  "id, parent_id, name, emoji, bookbuddy_id, society_id, created_at" as const;
 
 /**
  * Generate a short, shareable code like "BB-K3F9Q".
@@ -181,7 +181,6 @@ export async function getChildById(id: string): Promise<DbChild | null> {
  */
 export async function createChild(params: {
   name: string;
-  age_group: Child["age_group"];
   emoji?: string | null;
 }): Promise<DbChild | null> {
   const name = params.name.trim();
@@ -205,7 +204,6 @@ export async function createChild(params: {
       .insert({
         parent_id: uid,
         name,
-        age_group: params.age_group,
         emoji: params.emoji?.trim() || null,
         bookbuddy_id,
       })

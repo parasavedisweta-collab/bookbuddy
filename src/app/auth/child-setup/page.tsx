@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
-import { AGE_RANGES, ageDisplayToDb } from "@/lib/types";
 import {
   registerNewChild,
   searchSocieties,
@@ -17,9 +16,9 @@ import {
   searchSocietiesWithMembers,
   type DbSocietyWithMembers,
 } from "@/lib/supabase/societies";
-import { createParent } from "@/lib/supabase/parents";
+import { createParent, getCurrentParent } from "@/lib/supabase/parents";
 import { createChild } from "@/lib/supabase/children";
-import { ensureAnonymousSession } from "@/lib/supabase/client";
+import { getCurrentUserId } from "@/lib/supabase/client";
 
 interface NominatimResult {
   place_id: number;
@@ -71,16 +70,16 @@ type LocationState =
 export default function ChildSetupPage() {
   const router = useRouter();
   const [childName, setChildName] = useState("");
-  const [ageGroup, setAgeGroup] = useState<string>("");
+  const [phone, setPhone] = useState("");
   const [consent, setConsent] = useState(false);
   const [loading, setLoading] = useState(false);
-  // Is the anonymous Supabase session live? createParent needs auth.uid()
-  // to satisfy the `parents.id = auth.uid()` RLS policy, so submitting
-  // before bootstrap finishes results in a silently-rejected INSERT and
-  // a zombie localStorage-only account. We wait for either `ensureAnonymousSession`
-  // to resolve (the happy path) or the `bb_supabase_auth` event fired by
-  // SupabaseAuthBootstrap on cold loads.
-  const [sessionReady, setSessionReady] = useState(false);
+  // Auth gate: must be signed in (Google or email-OTP) before this page
+  // is even useful — `parents.id = auth.uid()` makes the createParent
+  // INSERT depend on a live session. We check on mount and redirect to
+  // /auth/sign-in if there's no session. While the check is in flight
+  // we render a small placeholder rather than the form (avoids a flash
+  // of unauthorised content + a broken submit if the user races us).
+  const [authChecked, setAuthChecked] = useState(false);
   // User-facing error surfaced when any of the three Supabase writes
   // (findOrCreateSociety / createParent / createChild) fail. Shown above
   // the submit button; cleared on the next submit attempt.
@@ -211,29 +210,34 @@ export default function ChildSetupPage() {
     }, 400);
   }, [searchQuery]);
 
-  // Wait for the anonymous Supabase session before allowing submit.
-  // ensureAnonymousSession() is idempotent — it returns the existing uid
-  // when the session is already live (usually the case on re-entry to
-  // this page), otherwise it mints one. We also subscribe to the
-  // bb_supabase_auth event so we pick up a late bootstrap resolve on
-  // cold-start races without having to poll.
+  // Auth gate. Two cases:
+  //   - No session at all → push to /auth/sign-in.
+  //   - Session exists AND a parent row already exists → user has
+  //     already completed registration; bounce them home so they can't
+  //     accidentally trigger a duplicate INSERT (which would fail the
+  //     parents PK on auth.uid() anyway, but better to short-circuit).
+  // Once both checks pass, render the form.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const uid = await ensureAnonymousSession();
-        if (!cancelled && uid) setSessionReady(true);
-      } catch (err) {
-        console.error("[child-setup] session bootstrap failed:", err);
+      const uid = await getCurrentUserId();
+      if (cancelled) return;
+      if (!uid) {
+        router.replace("/auth/sign-in");
+        return;
       }
+      const existing = await getCurrentParent();
+      if (cancelled) return;
+      if (existing) {
+        router.replace("/");
+        return;
+      }
+      setAuthChecked(true);
     })();
-    const onAuth = () => setSessionReady(true);
-    window.addEventListener("bb_supabase_auth", onAuth);
     return () => {
       cancelled = true;
-      window.removeEventListener("bb_supabase_auth", onAuth);
     };
-  }, []);
+  }, [router]);
 
   function pickNeighbour(s: SocietySuggestion) {
     setChosen({ id: s.id, name: s.name, city: s.city, source: "neighbour" });
@@ -293,49 +297,28 @@ export default function ChildSetupPage() {
     setSupabaseResults([]);
   }
 
+  const phoneDigits = phone.replace(/\D/g, "");
+  const phoneValid = phoneDigits.length >= 10;
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!childName || !ageGroup || !consent || !chosen) return;
+    if (!childName || !phoneValid || !consent || !chosen) return;
     setSubmitError(null);
     setLoading(true);
+
+    // Belt-and-braces auth re-check: the gate above already redirected
+    // anyone unauthenticated, but a session can expire between mount
+    // and submit. Failing fast here beats the cryptic RLS error.
+    const uid = await getCurrentUserId();
+    if (!uid) {
+      router.replace("/auth/sign-in");
+      return;
+    }
 
     // Supabase is the source of truth. If any of society / parent / child
     // inserts fail, we bail BEFORE writing localStorage or navigating —
     // otherwise the user lands on a success screen backed by no server
     // data, home feed stays empty, and requests can't route to them.
-    // (Bug history: this exact path produced the "Mukesh" zombie account
-    // on UAT — localStorage said registered, Supabase had nothing.)
-    const parentPhone = localStorage.getItem("bb_parent_phone") ?? undefined;
-    const ageGroupDb = ageDisplayToDb(ageGroup);
-
-    if (!parentPhone || !ageGroupDb) {
-      setSubmitError(
-        "Something's off with your details. Please go back and re-enter your phone number."
-      );
-      setLoading(false);
-      return;
-    }
-
-    // Belt-and-braces: make sure the anon session is actually live. The
-    // submit button is already gated on `sessionReady`, but a user could
-    // have the form up from before bootstrap finished, fill it out, and
-    // tap submit the instant sessionReady flipped true. ensureAnonymousSession
-    // is idempotent and cheap; it also catches the edge case where the
-    // session expired between form-fill and submit.
-    let uid: string | null = null;
-    try {
-      uid = await ensureAnonymousSession();
-    } catch (err) {
-      console.error("[child-setup] ensureAnonymousSession threw:", err);
-    }
-    if (!uid) {
-      setSubmitError(
-        "Couldn't connect to the server. Please check your internet and try again."
-      );
-      setLoading(false);
-      return;
-    }
-
     try {
       const society = await findOrCreateSociety(chosen.name, chosen.city);
       if (!society) {
@@ -347,23 +330,19 @@ export default function ChildSetupPage() {
       }
 
       const parent = await createParent({
-        phone: parentPhone,
+        phone: phoneDigits,
         society_id: society.id,
       });
       if (!parent) {
-        // The two realistic failure modes here are:
-        //   (a) phone UNIQUE collision — happens when this same number
-        //       registered on another device already (Path A's cross-
-        //       device limitation). Register page's isPhoneRegistered
-        //       check usually catches it, but a transient RPC failure
-        //       can let the user slip through.
-        //   (b) network blip.
-        // We can't distinguish without inspecting the PostgREST error,
-        // and createParent already console.errors the real one — surface
-        // a message covering both cases.
+        // After the auth refactor (migration 0007), parents.email is the
+        // UNIQUE credential — but email comes from auth.users, so an
+        // INSERT can't collide on email unless something is very wrong.
+        // The realistic failure modes are network blips and (rarely) a
+        // stale session whose JWT no longer matches an auth.users row.
+        // createParent already console.errors the underlying message —
+        // we surface a generic retry prompt here.
         setSubmitError(
-          "Couldn't create your account. This number may already be registered on another device, " +
-            "or there might be a connection issue. Try a different phone number or check your connection."
+          "Couldn't create your account. Please check your connection and try again."
         );
         setLoading(false);
         return;
@@ -371,15 +350,14 @@ export default function ChildSetupPage() {
 
       const child = await createChild({
         name: childName,
-        age_group: ageGroupDb,
       });
       if (!child) {
         // Parent inserted but child didn't — rare (would need RLS mismatch
         // or network flake on the second round-trip). The parent row is
         // orphaned; we tell the user to retry. On retry, createParent
-        // will fail with UNIQUE, and they'll see the error above — at
-        // which point they know to contact support. Not ideal, but
-        // leaves a clear trail rather than a silent zombie.
+        // will fail with PK collision (id=auth.uid() already exists) and
+        // surface the error above. Not ideal, but leaves a clear trail
+        // rather than a silent zombie.
         setSubmitError(
           "Almost there — couldn't save your child's profile. Please try again."
         );
@@ -403,7 +381,6 @@ export default function ChildSetupPage() {
       "bb_child",
       JSON.stringify({
         name: childName,
-        ageGroup,
         societyName: chosen.name,
         societyCity: chosen.city,
         societyLat: chosen.lat ?? null,
@@ -413,11 +390,14 @@ export default function ChildSetupPage() {
 
     registerNewChild({
       name: childName,
-      ageGroup,
+      // age_group is gone from the DB (migration 0007) but the legacy
+      // localStorage helper still requires the key — pass a placeholder
+      // string. Nothing reads it on the filter side.
+      ageGroup: "",
       societyId: chosen.id,
       societyName: chosen.name,
       societyCity: chosen.city,
-      parentPhone,
+      parentPhone: phoneDigits,
     });
 
     router.push("/auth/success");
@@ -457,6 +437,17 @@ export default function ChildSetupPage() {
     dedupedOsm.length > 0;
   const showResults = searchQuery.trim().length >= 2;
 
+  if (!authChecked) {
+    return (
+      <main className="flex-1 flex items-center justify-center px-6 w-full max-w-lg mx-auto">
+        <div className="flex items-center gap-3 text-on-surface-variant">
+          <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <span className="text-sm">Checking your session…</span>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="flex-1 flex flex-col items-center px-6 pb-12 w-full max-w-lg mx-auto">
       {/* Header */}
@@ -469,10 +460,10 @@ export default function ChildSetupPage() {
         </button>
         <div className="flex flex-col">
           <span className="text-xs font-bold uppercase tracking-widest text-secondary">
-            Step 2 of 2
+            Almost done
           </span>
           <div className="flex gap-1 mt-1">
-            <div className="h-1.5 w-6 rounded-full bg-primary" />
+            <div className="h-1.5 w-12 rounded-full bg-primary" />
             <div className="h-1.5 w-12 rounded-full bg-primary" />
           </div>
         </div>
@@ -492,7 +483,7 @@ export default function ChildSetupPage() {
           Tell us about your child
         </h1>
         <p className="text-on-surface-variant mt-2 text-base">
-          Help us personalize their reading journey.
+          Just a couple of details and you&apos;re in.
         </p>
       </div>
 
@@ -506,27 +497,29 @@ export default function ChildSetupPage() {
           required
         />
 
-        {/* Age Picker */}
+        {/* Phone — used to reach you about borrow requests, NOT a
+            credential. Email is the credential (auth identity). */}
         <div className="space-y-3">
           <label className="block text-sm font-bold text-secondary uppercase tracking-wider ml-1">
-            How old is your reader?
+            Your WhatsApp number
           </label>
-          <div className="grid gap-3 grid-cols-2">
-            {AGE_RANGES.map((age) => (
-              <button
-                key={age}
-                type="button"
-                onClick={() => setAgeGroup(age)}
-                className={`px-4 py-4 rounded-full font-bold text-base transition-all ${
-                  ageGroup === age
-                    ? "bg-primary-container text-on-primary-container border-2 border-primary shadow-lg"
-                    : "bg-surface-container-lowest text-on-surface border-2 border-transparent hover:bg-primary hover:text-white"
-                }`}
-              >
-                {age}
-              </button>
-            ))}
+          <div className="flex gap-3">
+            <div className="w-20 bg-surface-container-high rounded-lg flex items-center justify-center font-body font-bold text-lg text-on-surface shrink-0">
+              +91
+            </div>
+            <Input
+              type="tel"
+              placeholder="98765 43210"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              className="text-xl font-bold"
+              required
+            />
           </div>
+          <p className="text-xs text-on-surface-variant px-1 leading-snug">
+            We share this only with neighbours you&apos;ve approved a book
+            swap with. No spam, ever.
+          </p>
         </div>
 
         {/* Society / Location */}
@@ -898,26 +891,15 @@ export default function ChildSetupPage() {
           fullWidth
           disabled={
             !childName ||
-            !ageGroup ||
+            !phoneValid ||
             !consent ||
             !chosen ||
-            loading ||
-            !sessionReady
+            loading
           }
         >
-          {loading
-            ? "Creating..."
-            : !sessionReady
-              ? "Connecting…"
-              : "Create Account"}
+          {loading ? "Creating..." : "Create Account"}
           <span className="material-symbols-outlined">arrow_forward</span>
         </Button>
-
-        {!sessionReady && !loading && (
-          <p className="text-center text-xs text-on-surface-variant">
-            Waiting for a secure connection…
-          </p>
-        )}
 
         <p className="text-center text-xs text-on-surface-variant">
           By creating an account, you agree to our Terms of Service and Privacy

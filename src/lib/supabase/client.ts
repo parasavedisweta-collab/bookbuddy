@@ -1,13 +1,19 @@
 /**
  * Supabase browser client.
  *
- * Safe to import from client components. Uses the publishable (anon) key,
- * which has only the permissions granted to the `anon` Postgres role by
- * Row Level Security policies.
+ * Safe to import from client components. Uses the publishable (anon)
+ * key, which has only the permissions granted to the `anon` Postgres
+ * role by Row Level Security policies.
  *
- * Anonymous auth: on first load we sign the user in anonymously (Path A).
- * The session is persisted in localStorage so the same anonymous user
- * identity survives tab reloads and re-opens.
+ * Auth model: Google OAuth + email OTP (see lib/supabase/auth.ts).
+ * The previous anonymous-auth bootstrap is gone — pages that need an
+ * authenticated user check `getSession()` and redirect to /auth/sign-in
+ * if missing.
+ *
+ * `detectSessionInUrl: true` is critical here: after Google redirects
+ * back to /auth/callback with an access_token in the URL hash, the
+ * client picks it up automatically on first instantiation. Without
+ * this, the redirect lands on a page with no visible session change.
  */
 "use client";
 
@@ -31,7 +37,11 @@ export function getSupabase(): SupabaseClient {
     auth: {
       persistSession: true,
       autoRefreshToken: true,
-      detectSessionInUrl: false,
+      // Pick the OAuth session up from the redirect-back URL hash.
+      // Set to false in the previous anon-auth model because we never
+      // had OAuth callbacks; with Google sign-in, this MUST be true.
+      detectSessionInUrl: true,
+      flowType: "pkce",
     },
   });
 
@@ -39,20 +49,16 @@ export function getSupabase(): SupabaseClient {
 }
 
 /**
- * Ensures the current browser session is signed in (anonymously if needed).
- * Call this once on app start, e.g. from a top-level client component.
+ * Returns the current authenticated user's id, or null if there is
+ * no live session. Pages that require auth should redirect to
+ * /auth/sign-in when this returns null.
+ *
+ * (Previously this file exported `ensureAnonymousSession`, which
+ * minted an anonymous session on demand. That's gone — auth is now
+ * an explicit user action via Google or email OTP.)
  */
-export async function ensureAnonymousSession(): Promise<string | null> {
+export async function getCurrentUserId(): Promise<string | null> {
   const supabase = getSupabase();
-  const { data: sessionData } = await supabase.auth.getSession();
-  if (sessionData.session?.user?.id) {
-    return sessionData.session.user.id;
-  }
-
-  const { data, error } = await supabase.auth.signInAnonymously();
-  if (error) {
-    console.error("[supabase] anon sign-in failed:", error);
-    return null;
-  }
-  return data.user?.id ?? null;
+  const { data } = await supabase.auth.getSession();
+  return data.session?.user?.id ?? null;
 }

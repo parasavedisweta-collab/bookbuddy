@@ -1,51 +1,42 @@
 /**
- * Mounts once at the root layout. Ensures every visitor has an
- * anonymous Supabase session before any page does a write operation.
+ * Mounts once at the root layout. Listens for Supabase auth state
+ * changes and dispatches the `bb_supabase_auth` event so page-level
+ * effects can re-fetch when a session arrives or disappears.
  *
- * Renders nothing — it's purely a side-effect hook.
+ * No longer creates anonymous sessions on demand. The new auth model
+ * (Google OAuth + email OTP) requires an explicit user action — pages
+ * that need auth check `getSession()` and route to /auth/sign-in
+ * themselves. This component just keeps the rest of the app in sync
+ * with whatever the auth state currently is.
  *
- * Flow:
- *   1. On mount, check if a Supabase session already exists (persisted in localStorage).
- *   2. If not, call supabase.auth.signInAnonymously() to create one.
- *   3. The resulting JWT lives in localStorage and is sent automatically with
- *      every Supabase client request, so RLS policies see auth.uid().
- *
- * Failure modes:
- *   - Supabase env vars missing → throws in getSupabase(), logged but app continues.
- *   - Anonymous sign-ins disabled server-side → logs a clear error.
- *   - Network offline → logs error, will retry on next mount.
+ * Renders nothing.
  */
 "use client";
 
 import { useEffect } from "react";
-import { ensureAnonymousSession } from "@/lib/supabase/client";
+import { getSupabase } from "@/lib/supabase/client";
 
 export default function SupabaseAuthBootstrap() {
   useEffect(() => {
-    let cancelled = false;
+    const supabase = getSupabase();
 
-    (async () => {
-      try {
-        const uid = await ensureAnonymousSession();
-        if (cancelled) return;
-        if (uid) {
-          // Let page-level effects (home feed, shelf) know a session is
-          // now available. Without this, effects that ran before the
-          // session existed stay with an empty feed until the next
-          // user-driven state change.
-          window.dispatchEvent(new Event("bb_supabase_auth"));
-        } else {
-          console.warn(
-            "[supabase] anon sign-in returned no uid; check that Anonymous Sign-ins is enabled in Supabase → Authentication → Sign In / Up."
-          );
-        }
-      } catch (err) {
-        console.error("[supabase] bootstrap failed:", err);
-      }
-    })();
+    // Fire once on mount with whatever the persisted session looks
+    // like (could be a fresh tab on a logged-in user, could be a
+    // signed-out visitor — either way the rest of the app needs the
+    // signal to know which feed to render).
+    supabase.auth.getSession().then(() => {
+      window.dispatchEvent(new Event("bb_supabase_auth"));
+    });
+
+    // Subscribe to subsequent auth changes: SIGNED_IN (Google redirect
+    // back, OTP verify, refresh-token rotation), SIGNED_OUT, USER_UPDATED.
+    // Page-level effects listen to bb_supabase_auth and re-fetch.
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      window.dispatchEvent(new Event("bb_supabase_auth"));
+    });
 
     return () => {
-      cancelled = true;
+      sub.subscription.unsubscribe();
     };
   }, []);
 

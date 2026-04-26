@@ -7,19 +7,32 @@ export interface Society {
   created_at: string;
 }
 
+/**
+ * Parent identity. Email is the durable cross-device credential
+ * (Google or email-OTP); phone is contact-only (revealed to approved
+ * borrowers via the get_lister_contact RPC). Parent name was dropped
+ * in migration 0007 — we identify parents by their first child's
+ * name everywhere on the read side.
+ */
 export interface Parent {
   id: string;
+  email: string;
   phone: string | null;
-  email: string | null;
   society_id: string;
   created_at: string;
 }
 
+/**
+ * `age_group` was dropped from the schema in migration 0007 — it
+ * was never read for filtering. Kept here as an optional field so
+ * legacy demo data + any cached row loaded before the migration
+ * still typecheck without breaking the call sites.
+ */
 export interface Child {
   id: string;
   parent_id: string;
   name: string;
-  age_group: "below-5" | "6-8" | "9-12" | "12+";
+  age_group?: "below-5" | "6-8" | "9-12" | "12+";
   bookbuddy_id: string;
   created_at: string;
 }
@@ -71,31 +84,14 @@ export const GENRES: Genre[] = [
   "Other",
 ];
 
+/**
+ * Age-range constants are retained for legacy book-list filters etc.
+ * but the registration funnel no longer captures the child's age. The
+ * old `AGE_GROUP_OPTIONS` / `ageDisplayToDb` helpers are gone with
+ * migration 0007.
+ */
 export const AGE_RANGES = ["Below 5", "6-8", "9-12", "12+"] as const;
 export type AgeRange = (typeof AGE_RANGES)[number];
-
-/**
- * Pairs the human-readable age-range label (shown in the UI) with the
- * value persisted to Supabase. Kept in sync with the CHECK constraint
- * on public.children.age_group in supabase/migrations/0001_init.sql.
- *
- * Use this when rendering the age picker and writing to the DB — do
- * not hand-map "Below 5" ↔ "below-5" in callsites.
- */
-export const AGE_GROUP_OPTIONS: {
-  display: AgeRange;
-  value: Child["age_group"];
-}[] = [
-  { display: "Below 5", value: "below-5" },
-  { display: "6-8", value: "6-8" },
-  { display: "9-12", value: "9-12" },
-  { display: "12+", value: "12+" },
-];
-
-/** Map a display label back to the DB enum value. Returns null on unknown input. */
-export function ageDisplayToDb(display: string): Child["age_group"] | null {
-  return AGE_GROUP_OPTIONS.find((o) => o.display === display)?.value ?? null;
-}
 
 export interface Book {
   id: string;

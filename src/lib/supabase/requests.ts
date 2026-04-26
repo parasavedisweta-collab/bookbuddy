@@ -60,7 +60,6 @@ interface DbRequestWithContext extends DbBorrowRequest {
     id: string;
     parent_id: string;
     name: string;
-    age_group: string;
     emoji: string | null;
     society_id: string;
     bookbuddy_id: string;
@@ -70,7 +69,6 @@ interface DbRequestWithContext extends DbBorrowRequest {
     id: string;
     parent_id: string;
     name: string;
-    age_group: string;
     emoji: string | null;
     society_id: string;
     bookbuddy_id: string;
@@ -85,10 +83,10 @@ const CONTEXT_SELECT = `
     cover_url, cover_source, status, listed_at, metadata
   ),
   borrower_child:children!borrow_requests_borrower_child_id_fkey(
-    id, parent_id, name, age_group, emoji, society_id, bookbuddy_id, created_at
+    id, parent_id, name, emoji, society_id, bookbuddy_id, created_at
   ),
   lister_child:children!borrow_requests_lister_child_id_fkey(
-    id, parent_id, name, age_group, emoji, society_id, bookbuddy_id, created_at
+    id, parent_id, name, emoji, society_id, bookbuddy_id, created_at
   )
 `;
 
@@ -100,7 +98,6 @@ function mapChildSummary(
     id: c.id,
     parent_id: c.parent_id,
     name: c.name,
-    age_group: c.age_group as Child["age_group"],
     bookbuddy_id: c.bookbuddy_id,
     created_at: c.created_at,
   };
@@ -120,7 +117,6 @@ export function mapRequestRow(row: DbRequestWithContext): BorrowRequest {
               parent_id: row.lister_child.parent_id,
               name: row.lister_child.name,
               emoji: row.lister_child.emoji,
-              age_group: row.lister_child.age_group as Child["age_group"],
               bookbuddy_id: row.lister_child.bookbuddy_id,
               society_id: row.lister_child.society_id,
               created_at: row.lister_child.created_at,

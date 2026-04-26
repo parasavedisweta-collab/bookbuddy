@@ -126,7 +126,6 @@ export interface DbBookWithListerContext extends DbBook {
     id: string;
     name: string;
     emoji: string | null;
-    age_group: string;
     society_id: string;
     parent_id: string;
   };
@@ -151,7 +150,7 @@ export async function listBooksForSociety(
     .select(
       `${COLUMNS},
        child:children!inner(
-         id, name, emoji, age_group, society_id, parent_id
+         id, name, emoji, society_id, parent_id
        )`
     )
     .eq("child.society_id", societyId)
