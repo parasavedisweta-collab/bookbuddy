@@ -22,6 +22,9 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase/client";
 import { getCurrentParent } from "@/lib/supabase/parents";
+import { listChildrenForCurrentParent } from "@/lib/supabase/children";
+import { getSocietyById } from "@/lib/supabase/societies";
+import { hydrateLocalFromSupabase } from "@/lib/userStore";
 
 export default function AuthCallbackPage() {
   const router = useRouter();
@@ -51,6 +54,35 @@ export default function AuthCallbackPage() {
 
         const parent = await getCurrentParent();
         if (parent && parent.society_id) {
+          // Rehydrate localStorage from Supabase before routing home.
+          // Without this, the legacy getCurrentChildId() in userStore.ts
+          // falls back to demo "c1" (Jenny) and home paints the wrong
+          // identity until/unless the user manually picks their real
+          // child from the switcher. Two round-trips here (children +
+          // society) but they parallelise; it's < 200ms in practice.
+          try {
+            const [children, society] = await Promise.all([
+              listChildrenForCurrentParent(),
+              getSocietyById(parent.society_id),
+            ]);
+            const firstChild = children[0];
+            if (firstChild) {
+              hydrateLocalFromSupabase({
+                childId: firstChild.id,
+                childName: firstChild.name,
+                childEmoji: firstChild.emoji,
+                parentPhone: parent.phone,
+                societyId: parent.society_id,
+                societyName: society?.name ?? null,
+                societyCity: society?.city ?? null,
+              });
+            }
+          } catch (hydrateErr) {
+            // Hydration is best-effort — if it fails the home page will
+            // still try its own Supabase fetches; user just sees a brief
+            // demo-data flash. Logged so we notice in dev.
+            console.warn("[auth/callback] hydrate failed:", hydrateErr);
+          }
           router.replace("/");
         } else {
           router.replace("/auth/child-setup");

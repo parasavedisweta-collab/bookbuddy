@@ -311,6 +311,92 @@ export function clearLocalUserData() {
   window.dispatchEvent(new Event("bb_registered_change"));
 }
 
+/**
+ * Rehydrate localStorage from Supabase after a fresh sign-in.
+ *
+ * Background: a lot of read-side helpers in this file (`getCurrentChildId`,
+ * `getCurrentUserSocietyId`, etc.) fall back to demo data ("c1" → Jenny)
+ * when localStorage is empty. After sign-out we wipe localStorage; on
+ * sign-back-in the empty store + demo fallback would render Jenny instead
+ * of the user's real child.
+ *
+ * Call this from /auth/callback after `getCurrentParent()` confirms the
+ * user is registered. Pass the parent and their first child (or whichever
+ * child you want active) and we'll write the keys the legacy localStorage
+ * readers consult, so home/profile/shelf paint the right identity on
+ * first render.
+ *
+ * Idempotent — safe to call multiple times. Doesn't touch books / requests
+ * keys; those are filled by their own Supabase fetches in pages.
+ */
+export function hydrateLocalFromSupabase(params: {
+  childId: string;
+  childName: string;
+  childEmoji?: string | null;
+  parentPhone: string | null;
+  societyId: string;
+  societyName: string | null;
+  societyCity: string | null;
+}) {
+  if (typeof window === "undefined") return;
+
+  const {
+    childId,
+    childName,
+    childEmoji,
+    parentPhone,
+    societyId,
+    societyName,
+    societyCity,
+  } = params;
+
+  // Active child pointer. Without this, getCurrentChildId() returns "c1"
+  // and the home page renders Jenny.
+  localStorage.setItem(CHILD_KEY, childId);
+
+  // Registered-children list. Drives the society / member lookups in the
+  // legacy readers; we write a one-element array reflecting the Supabase
+  // child so getCurrentUserSocietyId() resolves to the user's real society.
+  const child: RegisteredChild = {
+    id: childId,
+    name: childName,
+    ageGroup: "", // post-0007 we no longer capture age_group
+    societyId,
+    societyName: societyName ?? "",
+    societyCity: societyCity ?? "",
+    emoji: childEmoji ?? "📖",
+    parentPhone: parentPhone ?? undefined,
+  };
+  localStorage.setItem(REGISTERED_CHILDREN_KEY, JSON.stringify([child]));
+
+  // bb_child blob — read by the registration-success screen and a few
+  // other legacy paths. Mirrors what registerNewChild writes during
+  // first-time registration so signing in on a new device looks the same
+  // as registering on it.
+  localStorage.setItem(
+    "bb_child",
+    JSON.stringify({
+      name: childName,
+      societyName: societyName ?? "",
+      societyCity: societyCity ?? "",
+      societyLat: null,
+      societyLng: null,
+    })
+  );
+
+  // Phone is occasionally read for copy-paste convenience in flows like
+  // book/[id]. Safe to write even when the field doesn't exist on this
+  // device.
+  if (parentPhone) {
+    localStorage.setItem("bb_parent_phone", parentPhone);
+  }
+
+  // Single batch of events so any mounted page re-renders against the
+  // fresh state in one tick.
+  window.dispatchEvent(new Event("bb_user_change"));
+  window.dispatchEvent(new Event("bb_registered_change"));
+}
+
 /* ── Borrow requests ──────────────────────────────────────── */
 
 function readLocalRequests(): BorrowRequest[] {
