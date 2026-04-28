@@ -97,8 +97,8 @@ interface PushSubscriptionRow {
 
 // ---------- Boot ------------------------------------------------------
 
-const VAPID_PUBLIC_KEY = Deno.env.get("VAPID_PUBLIC_KEY")!;
-const VAPID_PRIVATE_KEY = Deno.env.get("VAPID_PRIVATE_KEY")!;
+const VAPID_PUBLIC_KEY = Deno.env.get("VAPID_PUBLIC_KEY") ?? "";
+const VAPID_PRIVATE_KEY = Deno.env.get("VAPID_PRIVATE_KEY") ?? "";
 const VAPID_SUBJECT = Deno.env.get("VAPID_SUBJECT") ?? "mailto:noreply@bookbuds.in";
 
 // Email is best-effort. If RESEND_API_KEY / EMAIL_FROM / APP_URL aren't
@@ -109,18 +109,31 @@ const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
 const EMAIL_FROM = Deno.env.get("EMAIL_FROM") ?? "";
 const APP_URL = Deno.env.get("APP_URL") ?? "";
 
-if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+// Push is configured lazily and gated by this flag — without it, a missing
+// VAPID secret used to throw inside `webpush.setVapidDetails` at module
+// import, which crashed the worker and 500'd EVERY webhook delivery (push
+// AND email both lost). Now: log loudly, skip the setup, and let push
+// calls no-op while email keeps flowing. Symmetric with the email-disabled
+// branch below.
+const PUSH_ENABLED = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
+if (!PUSH_ENABLED) {
   console.error(
-    "[send-push] missing VAPID env vars. Set VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY in Edge Function secrets."
+    "[send-push] push disabled: set VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY in Edge Function secrets to enable."
   );
+} else {
+  try {
+    webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+  } catch (err) {
+    // Malformed key (wrong base64, wrong length, etc.) — same outcome as
+    // missing: log + carry on with email only, rather than 500-ing.
+    console.error("[send-push] webpush.setVapidDetails threw; push disabled:", err);
+  }
 }
 if (!RESEND_API_KEY || !EMAIL_FROM || !APP_URL) {
   console.warn(
     "[send-push] email disabled: set RESEND_API_KEY, EMAIL_FROM, APP_URL in Edge Function secrets to enable."
   );
 }
-
-webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -430,6 +443,9 @@ async function deliver(
   sub: PushSubscriptionRow,
   payload: object
 ): Promise<void> {
+  // No VAPID setup → web-push would throw on every send. Skip silently;
+  // the boot-time error log already surfaces the misconfig.
+  if (!PUSH_ENABLED) return;
   try {
     await webpush.sendNotification(
       {
