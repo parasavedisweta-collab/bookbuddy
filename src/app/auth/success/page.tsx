@@ -137,7 +137,7 @@ export default function SuccessPage() {
             <div className="w-40 h-40 rounded-2xl overflow-hidden">
               <img
                 src="/bookworm.png"
-                alt="BookBuddy worm celebrating"
+                alt="BookBuds worm celebrating"
                 className="w-[200%] h-[200%] object-cover"
                 style={{ objectPosition: "100% 0%" }}
               />
@@ -237,7 +237,7 @@ export default function SuccessPage() {
               <ShareAppButton
                 variant="prominent"
                 headline="You're first in your society!"
-                subhead="Share BookBuddy in your society WhatsApp group so there are books to borrow."
+                subhead="Share BookBuds in your society WhatsApp group so there are books to borrow."
               />
             ) : (
               <ShareAppButton variant="default" />

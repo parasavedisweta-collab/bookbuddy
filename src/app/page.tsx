@@ -283,7 +283,7 @@ export default function HomePage() {
               </span>
             </div>
             <span className="text-primary font-headline font-extrabold text-xl">
-              BookBuddy
+              BookBuds
             </span>
           </div>
           <NotificationBell />

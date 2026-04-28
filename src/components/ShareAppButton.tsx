@@ -39,9 +39,9 @@ export default function ShareAppButton({
     const url =
       process.env.NEXT_PUBLIC_APP_URL ||
       (typeof window !== "undefined" ? window.location.origin : "");
-    const title = "BookBuddy";
+    const title = "BookBuds";
     const text =
-      "Share books with kids in your society on BookBuddy 📚 — list one, borrow many!";
+      "Share books with kids in your society on BookBuds 📚 — list one, borrow many!";
 
     // Native share sheet path.
     if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
@@ -102,7 +102,7 @@ export default function ShareAppButton({
               className="mt-1 self-start flex items-center gap-2 bg-white/95 hover:bg-white text-primary font-bold text-sm px-4 py-2.5 rounded-full shadow-sm active:scale-95 transition-transform"
             >
               <span className="material-symbols-outlined text-base">share</span>
-              Share BookBuddy
+              Share BookBuds
             </button>
           </div>
           {/* Decorative corner blob */}
@@ -121,7 +121,7 @@ export default function ShareAppButton({
         className="w-full flex items-center justify-center gap-2 py-3 rounded-full border-2 border-primary/30 text-primary font-bold text-sm active:scale-[0.98] transition-transform"
       >
         <span className="material-symbols-outlined text-lg">share</span>
-        Invite friends to BookBuddy
+        Invite friends to BookBuds
       </button>
       {toast && <Toast message={toast} />}
     </>

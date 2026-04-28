@@ -99,7 +99,7 @@ export default function SignInPage() {
           </span>
         </div>
         <span className="text-primary font-headline font-extrabold text-2xl tracking-tight">
-          BookBuddy
+          BookBuds
         </span>
       </div>
 
@@ -107,7 +107,7 @@ export default function SignInPage() {
       <div className="w-32 h-32 rounded-2xl overflow-hidden shadow-md mb-8 shrink-0">
         <img
           src="/bookworm.png"
-          alt="BookBuddy worm reading"
+          alt="BookBuds worm reading"
           className="w-[200%] h-[200%] object-cover"
           style={{ objectPosition: "0% 0%" }}
         />
@@ -118,7 +118,7 @@ export default function SignInPage() {
           <>
             <div className="space-y-2 text-center">
               <h1 className="text-on-surface font-headline font-bold text-3xl leading-tight tracking-tight">
-                Sign in to BookBuddy
+                Sign in to BookBuds
               </h1>
               <p className="text-on-surface-variant text-base">
                 Same account works on every device.

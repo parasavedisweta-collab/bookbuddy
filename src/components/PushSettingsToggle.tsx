@@ -75,7 +75,7 @@ export default function PushSettingsToggle() {
           </p>
           <p className="text-xs text-on-surface-variant mt-1">
             On iPhone, tap <b>Share → Add to Home Screen</b>, then open
-            BookBuddy from there to enable notifications.
+            BookBuds from there to enable notifications.
           </p>
         </div>
       </div>
@@ -94,7 +94,7 @@ export default function PushSettingsToggle() {
           </p>
           <p className="text-xs text-on-surface-variant mt-1">
             You previously declined. Re-enable from your phone&apos;s
-            Settings → BookBuddy → Notifications.
+            Settings → BookBuds → Notifications.
           </p>
         </div>
       </div>

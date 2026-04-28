@@ -67,7 +67,7 @@ self.addEventListener("push", (event) => {
     console.warn("[sw] push payload not JSON", err);
   }
 
-  const title = payload.title || "BookBuddy";
+  const title = payload.title || "BookBuds";
   const body = payload.body || "You have a new update.";
   const url = payload.url || "/";
   const tag = payload.tag || undefined;
