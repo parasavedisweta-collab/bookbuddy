@@ -190,8 +190,8 @@ function buildNotification(
       url: `/shelf?tab=incoming`,
       tag: `request-${r.id}-pending`,
       emailIntro: `Hey ${lister}! 👋`,
-      emailBody: `Big news — ${borrower} just spotted "${bookTitle}" on your shelf and would love to borrow it. 📖\n\nYou can approve the request or pass on it from your shelf in BookBuddy. ${borrower} will be told either way, so don't worry about leaving them hanging.`,
-      emailSignoff: `Happy sharing,\nTeam BookBuddy 🐛📚`,
+      emailBody: `Big news — ${borrower} just spotted "${bookTitle}" on your shelf and would love to borrow it. 📖\n\nGo ahead and approve the request — ${borrower} is waiting!`,
+      emailSignoff: `Happy sharing,\nTeam BookBuds 🐛📚`,
       ctaLabel: `Open my shelf`,
     };
   }
@@ -205,12 +205,12 @@ function buildNotification(
         return {
           recipientChildId: r.borrower_child_id,
           title: `🎉 ${lister} said yes!`,
-          body: `Woohoo! ${lister} approved your request for "${bookTitle}". Their contact info is now visible in BookBuddy — tap to coordinate the handover.`,
+          body: `Woohoo! ${lister} approved your request for "${bookTitle}". Their contact info is now visible in BookBuds — tap to coordinate the handover.`,
           url: `/book/${r.book_id}`,
           tag: `request-${r.id}-approved`,
           emailIntro: `Woohoo, ${borrower}! 🎉`,
-          emailBody: `${lister} just approved your request for "${bookTitle}". Get ready to dive in!\n\nTheir contact info is now unlocked inside BookBuddy — tap below to message them on WhatsApp or call to figure out the pickup. And don't forget to say a big thank you when you grab the book. 💛`,
-          emailSignoff: `Happy reading,\nTeam BookBuddy 🐛📚`,
+          emailBody: `${lister} just approved your request for "${bookTitle}". Get ready to dive in!\n\nTheir contact info is now unlocked inside BookBuds — tap below to message them on WhatsApp or call to figure out the pickup. And don't forget to say a big thank you when you grab the book. 💛`,
+          emailSignoff: `Happy reading,\nTeam BookBuds 🐛📚`,
           ctaLabel: `See contact info`,
         };
       case "declined":
@@ -222,7 +222,7 @@ function buildNotification(
           tag: `request-${r.id}-declined`,
           emailIntro: `Hi ${borrower},`,
           emailBody: `${lister} couldn't share "${bookTitle}" this time round — maybe their kid is in the middle of reading it, or it's already promised to someone else. It happens! 🤷\n\nDon't worry though — your society has plenty of other great books waiting for a new reader. Tap below to keep browsing.`,
-          emailSignoff: `Keep reading,\nTeam BookBuddy 🐛📚`,
+          emailSignoff: `Keep reading,\nTeam BookBuds 🐛📚`,
           ctaLabel: `Browse other books`,
         };
       case "auto_declined":
@@ -236,7 +236,7 @@ function buildNotification(
           tag: `request-${r.id}-expired`,
           emailIntro: `Hey ${borrower},`,
           emailBody: `Your request for "${bookTitle}" timed out — looks like ${lister} was busy and didn't get a chance to respond. ⏰\n\nNo worries! Try a different book — or if you're still really keen on this one, you can always send another request later when ${lister} is back in the loop.`,
-          emailSignoff: `Happy hunting,\nTeam BookBuddy 🐛📚`,
+          emailSignoff: `Happy hunting,\nTeam BookBuds 🐛📚`,
           ctaLabel: `Find another book`,
         };
       // picked_up / returned / confirmed_return are deliberately not
@@ -360,14 +360,14 @@ function renderEmail(
   const html = `<!doctype html>
 <html><body style="margin:0;padding:24px;background:#fefcf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1a1c14;">
   <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;padding:32px 28px;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-    <p style="margin:0 0 6px;font-size:13px;font-weight:700;letter-spacing:1.5px;color:#5e7d3f;text-transform:uppercase;">BookBuddy</p>
+    <p style="margin:0 0 6px;font-size:13px;font-weight:700;letter-spacing:1.5px;color:#5e7d3f;text-transform:uppercase;">BookBuds</p>
     <h1 style="margin:0 0 18px;font-size:22px;line-height:1.25;font-weight:800;color:#1a1c14;">${escapeHtml(notif.title)}</h1>
     <p style="margin:0 0 14px;font-size:16px;line-height:1.4;font-weight:600;color:#1a1c14;">${escapeHtml(notif.emailIntro)}</p>
     ${paragraphsToHtml(notif.emailBody)}
     <p style="margin:24px 0 0;"><a href="${ctaUrl}" style="display:inline-block;background:#5e7d3f;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:999px;">${escapeHtml(notif.ctaLabel)}</a></p>
     <p style="margin:28px 0 0;font-size:14px;line-height:1.5;color:#43483a;white-space:pre-line;">${escapeHtml(notif.emailSignoff)}</p>
     <hr style="border:none;border-top:1px solid #e8e6dc;margin:28px 0 16px;">
-    <p style="margin:0;font-size:12px;line-height:1.5;color:#9a9a8e;">You're getting this because you're part of a BookBuddy borrow request for "${safeTitle}". Manage notifications from Profile → Push notifications inside the app.</p>
+    <p style="margin:0;font-size:12px;line-height:1.5;color:#9a9a8e;">You're getting this because you're part of a BookBuds borrow request for "${safeTitle}". Manage notifications from Profile → Push notifications inside the app.</p>
   </div>
 </body></html>`;
   const text =

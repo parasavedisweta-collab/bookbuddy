@@ -214,7 +214,7 @@ export default function AddToHomeScreenPrompt() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="font-headline font-bold text-on-surface text-sm leading-tight">
-              Add BookBuddy to your home screen
+              Add BookBuds to your home screen
             </p>
             <p className="text-on-surface-variant text-xs leading-snug mt-0.5">
               Opens full-screen, just like an app.
@@ -291,7 +291,7 @@ export default function AddToHomeScreenPrompt() {
                   3
                 </span>
                 <span className="leading-snug">
-                  Tap <b>Add</b> in the top-right corner — BookBuddy is now on
+                  Tap <b>Add</b> in the top-right corner — BookBuds is now on
                   your home screen!
                 </span>
               </li>

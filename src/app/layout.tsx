@@ -21,14 +21,14 @@ const plusJakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "BookBuddy — Kids Book Sharing",
+  title: "BookBuds — Kids Book Sharing",
   description:
     "List one, borrow many. A peer-to-peer book sharing library for kids in your housing society.",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "BookBuddy",
+    title: "BookBuds",
   },
 };
 

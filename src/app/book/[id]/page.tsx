@@ -493,7 +493,7 @@ export default function BookDetailPage({
                   List a book first to borrow
                 </p>
                 <p className="text-sm text-on-surface-variant mt-1 leading-snug">
-                  BookBuddy is a give-and-take library. Share a book from your shelf to unlock borrowing from others.
+                  BookBuds is a give-and-take library. Share a book from your shelf to unlock borrowing from others.
                 </p>
               </div>
             </div>

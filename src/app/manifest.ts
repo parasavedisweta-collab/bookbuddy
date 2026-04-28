@@ -9,8 +9,8 @@ import type { MetadataRoute } from "next";
 export default function manifest(): MetadataRoute.Manifest {
   const isUat = process.env.NEXT_PUBLIC_ENV === "uat";
   return {
-    name: isUat ? "BookBuddy UAT" : "BookBuddy — Kids Book Sharing",
-    short_name: isUat ? "BB UAT" : "BookBuddy",
+    name: isUat ? "BookBuds UAT" : "BookBuds — Kids Book Sharing",
+    short_name: isUat ? "BB UAT" : "BookBuds",
     description:
       "List one, borrow many. A peer-to-peer book sharing library for kids in your housing society.",
     start_url: "/",

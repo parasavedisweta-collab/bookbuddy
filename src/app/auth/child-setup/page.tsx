@@ -474,7 +474,7 @@ export default function ChildSetupPage() {
         <div className="w-32 h-32 rounded-2xl overflow-hidden shadow-md mx-auto mb-4">
           <img
             src="/bookworm.png"
-            alt="BookBuddy worm reading"
+            alt="BookBuds worm reading"
             className="w-[200%] h-[200%] object-cover"
             style={{ objectPosition: "0% 0%" }}
           />
@@ -660,7 +660,7 @@ export default function ChildSetupPage() {
                                 <span className="font-semibold text-on-surface block truncate">{s.name}</span>
                                 <span className="text-on-surface-variant text-xs block truncate">
                                   {s.memberCount === 0
-                                    ? `Already on BookBuddy · ${s.city}`
+                                    ? `Already on BookBuds · ${s.city}`
                                     : `${s.memberCount} neighbour${s.memberCount === 1 ? "" : "s"} here · ${s.city}`}
                                 </span>
                               </div>
@@ -868,7 +868,7 @@ export default function ChildSetupPage() {
           />
           <span className="text-on-surface font-medium text-sm leading-tight">
             I confirm that I am a resident of the selected society and I consent
-            to my child participating in BookBuddy.
+            to my child participating in BookBuds.
           </span>
         </label>
 

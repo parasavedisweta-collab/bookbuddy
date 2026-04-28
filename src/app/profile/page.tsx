@@ -233,10 +233,10 @@ export default function ProfilePage() {
         {/* Info */}
         <div className="bg-surface-container-low p-5 rounded-xl space-y-4">
           <h3 className="font-headline font-bold text-on-surface">
-            About BookBuddy
+            About BookBuds
           </h3>
           <p className="text-sm text-on-surface-variant leading-relaxed">
-            BookBuddy is a peer-to-peer book sharing platform for kids in your
+            BookBuds is a peer-to-peer book sharing platform for kids in your
             housing society. List one book, borrow many. No money involved —
             just share the joy of reading!
           </p>

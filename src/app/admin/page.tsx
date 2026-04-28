@@ -574,7 +574,7 @@ export default function AdminPage() {
             <span className="material-symbols-outlined text-on-primary text-lg">shield</span>
           </div>
           <div>
-            <h1 className="font-headline font-extrabold text-on-surface text-lg leading-none">BookBuddy Admin</h1>
+            <h1 className="font-headline font-extrabold text-on-surface text-lg leading-none">BookBuds Admin</h1>
             <p className="text-xs text-outline mt-0.5">All societies · Demo data</p>
           </div>
         </div>
