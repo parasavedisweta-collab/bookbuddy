@@ -121,12 +121,26 @@ const supabase = createClient(
 interface NotificationContent {
   /** Whose subscriptions we're pushing to. */
   recipientChildId: string;
+  /** Push banner title + email subject line. Short — ~40 chars max. */
   title: string;
+  /** Push banner body. Short — ~120 chars max. */
   body: string;
   /** Deep link the SW will open / focus on click. */
   url: string;
   /** Dedup tag — multiple updates for the same request collapse into one banner. */
   tag: string;
+  /**
+   * Email-only copy. Push has to fit on a lock screen so we keep the
+   * `body` short; email has more room for a personal greeting + a
+   * fuller paragraph + a sign-off. Each is one logical paragraph;
+   * the renderer wraps them in styled <p> tags.
+   */
+  emailIntro: string;
+  emailBody: string;
+  emailSignoff: string;
+  /** Label on the CTA button in the email. Per-event so the call to
+   *  action matches the moment ("Approve request" vs "Browse books"). */
+  ctaLabel: string;
 }
 
 /**
@@ -163,6 +177,10 @@ function buildNotification(
       body: `${borrower} would love to borrow "${bookTitle}" from your shelf. Tap to approve or pass.`,
       url: `/shelf?tab=incoming`,
       tag: `request-${r.id}-pending`,
+      emailIntro: `Hey ${lister}! 👋`,
+      emailBody: `Big news — ${borrower} just spotted "${bookTitle}" on your shelf and would love to borrow it. 📖\n\nYou can approve the request or pass on it from your shelf in BookBuddy. ${borrower} will be told either way, so don't worry about leaving them hanging.`,
+      emailSignoff: `Happy sharing,\nTeam BookBuddy 🐛📚`,
+      ctaLabel: `Open my shelf`,
     };
   }
 
@@ -178,6 +196,10 @@ function buildNotification(
           body: `Woohoo! ${lister} approved your request for "${bookTitle}". Their contact info is now visible in BookBuddy — tap to coordinate the handover.`,
           url: `/book/${r.book_id}`,
           tag: `request-${r.id}-approved`,
+          emailIntro: `Woohoo, ${borrower}! 🎉`,
+          emailBody: `${lister} just approved your request for "${bookTitle}". Get ready to dive in!\n\nTheir contact info is now unlocked inside BookBuddy — tap below to message them on WhatsApp or call to figure out the pickup. And don't forget to say a big thank you when you grab the book. 💛`,
+          emailSignoff: `Happy reading,\nTeam BookBuddy 🐛📚`,
+          ctaLabel: `See contact info`,
         };
       case "declined":
         return {
@@ -186,6 +208,10 @@ function buildNotification(
           body: `Bummer — ${lister} couldn't lend "${bookTitle}" right now. Plenty of other great books in your society. Tap to keep browsing.`,
           url: `/shelf?tab=outgoing`,
           tag: `request-${r.id}-declined`,
+          emailIntro: `Hi ${borrower},`,
+          emailBody: `${lister} couldn't share "${bookTitle}" this time round — maybe their kid is in the middle of reading it, or it's already promised to someone else. It happens! 🤷\n\nDon't worry though — your society has plenty of other great books waiting for a new reader. Tap below to keep browsing.`,
+          emailSignoff: `Keep reading,\nTeam BookBuddy 🐛📚`,
+          ctaLabel: `Browse other books`,
         };
       case "auto_declined":
         // Auto-decline fires when the lister hasn't responded in N days.
@@ -196,6 +222,10 @@ function buildNotification(
           body: `Your request for "${bookTitle}" expired — ${lister} didn't get a chance to respond. No worries! Try another book.`,
           url: `/`,
           tag: `request-${r.id}-expired`,
+          emailIntro: `Hey ${borrower},`,
+          emailBody: `Your request for "${bookTitle}" timed out — looks like ${lister} was busy and didn't get a chance to respond. ⏰\n\nNo worries! Try a different book — or if you're still really keen on this one, you can always send another request later when ${lister} is back in the loop.`,
+          emailSignoff: `Happy hunting,\nTeam BookBuddy 🐛📚`,
+          ctaLabel: `Find another book`,
         };
       case "picked_up":
         // Pickup is usually marked by the borrower → notify the lister.
@@ -205,6 +235,10 @@ function buildNotification(
           body: `"${bookTitle}" is now with ${borrower}. Hope they enjoy reading it! You'll be notified when it's returned.`,
           url: `/shelf?tab=incoming`,
           tag: `request-${r.id}-picked-up`,
+          emailIntro: `Hey ${lister}! 📖`,
+          emailBody: `${borrower} just picked up "${bookTitle}" from you. Off it goes on a little adventure! ✨\n\nWe hope they enjoy reading it as much as your kid did. We'll buzz you again when ${borrower} marks the book as returned — no need to keep tabs in the meantime.`,
+          emailSignoff: `Cheers,\nTeam BookBuddy 🐛📚`,
+          ctaLabel: `View my shelf`,
         };
       case "returned":
         // Return is marked by the borrower → notify the lister to confirm.
@@ -214,6 +248,10 @@ function buildNotification(
           body: `${borrower} returned "${bookTitle}". Tap to confirm you got it back.`,
           url: `/shelf?tab=incoming`,
           tag: `request-${r.id}-returned`,
+          emailIntro: `Hi ${lister},`,
+          emailBody: `Good news — "${bookTitle}" is on its way back home. ${borrower} just marked it as returned. 📚\n\nOnce you've got the book in hand, tap below to confirm receipt and close the loop. ✅`,
+          emailSignoff: `Thanks,\nTeam BookBuddy 🐛📚`,
+          ctaLabel: `Confirm I got it back`,
         };
       case "confirmed_return":
         // Lister confirmed → notify the borrower the loop is closed.
@@ -223,6 +261,10 @@ function buildNotification(
           body: `${lister} confirmed they got "${bookTitle}" back. Thanks for being a great BookBuddy!`,
           url: `/shelf?tab=outgoing`,
           tag: `request-${r.id}-confirmed`,
+          emailIntro: `Thanks ${borrower}! 🙌`,
+          emailBody: `${lister} confirmed they got "${bookTitle}" back safely — the borrow loop is officially closed. 🎉\n\nThanks for being such a thoughtful BookBuddy. Your housing society is a little more bookish thanks to you. Ready for your next adventure? There's always another good read waiting. 📚`,
+          emailSignoff: `Keep sharing,\nTeam BookBuddy 🐛📚`,
+          ctaLabel: `Find your next read`,
         };
       default:
         return null;
@@ -300,6 +342,24 @@ function escapeHtml(s: string): string {
 }
 
 /**
+ * Render a paragraph block as inline-styled HTML. Each `\n\n` in the
+ * source becomes a separate <p>; single `\n` becomes <br>. Keeps the
+ * email-side copy authoring as plain template-literal text without
+ * needing a markdown dependency.
+ */
+function paragraphsToHtml(text: string): string {
+  return text
+    .split(/\n\n+/)
+    .map(
+      (para) =>
+        `<p style="margin:0 0 16px;font-size:15px;line-height:1.55;color:#43483a;">${escapeHtml(
+          para
+        ).replace(/\n/g, "<br>")}</p>`
+    )
+    .join("");
+}
+
+/**
  * Build a tiny inline-styled email body that mirrors the push copy and
  * deep-links back into the app. We keep it dead simple — single-column,
  * no images, no external CSS. That's the most reliable shape across
@@ -315,21 +375,29 @@ function renderEmail(
   bookTitle: string
 ): { html: string; text: string } {
   const safeTitle = escapeHtml(bookTitle);
-  const safeBody = escapeHtml(notif.body);
   // Absolute URL for the deep-link CTA. notif.url is a relative path
   // (e.g. "/shelf?tab=incoming") because that's what the SW consumes.
   const ctaUrl = `${APP_URL.replace(/\/$/, "")}${notif.url}`;
   const html = `<!doctype html>
 <html><body style="margin:0;padding:24px;background:#fefcf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1a1c14;">
   <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;padding:32px 28px;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-    <p style="margin:0 0 8px;font-size:13px;font-weight:600;letter-spacing:1px;color:#5e7d3f;text-transform:uppercase;">BookBuddy</p>
-    <h1 style="margin:0 0 12px;font-size:22px;line-height:1.25;font-weight:700;color:#1a1c14;">${escapeHtml(notif.title)}</h1>
-    <p style="margin:0 0 24px;font-size:15px;line-height:1.5;color:#43483a;">${safeBody}</p>
-    <a href="${ctaUrl}" style="display:inline-block;background:#5e7d3f;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:999px;">Open BookBuddy</a>
-    <p style="margin:32px 0 0;font-size:12px;line-height:1.5;color:#888;">You're getting this because you're part of a BookBuddy borrow request for "${safeTitle}". Manage notifications from Profile → Push notifications inside the app.</p>
+    <p style="margin:0 0 6px;font-size:13px;font-weight:700;letter-spacing:1.5px;color:#5e7d3f;text-transform:uppercase;">BookBuddy</p>
+    <h1 style="margin:0 0 18px;font-size:22px;line-height:1.25;font-weight:800;color:#1a1c14;">${escapeHtml(notif.title)}</h1>
+    <p style="margin:0 0 14px;font-size:16px;line-height:1.4;font-weight:600;color:#1a1c14;">${escapeHtml(notif.emailIntro)}</p>
+    ${paragraphsToHtml(notif.emailBody)}
+    <p style="margin:24px 0 0;"><a href="${ctaUrl}" style="display:inline-block;background:#5e7d3f;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:999px;">${escapeHtml(notif.ctaLabel)}</a></p>
+    <p style="margin:28px 0 0;font-size:14px;line-height:1.5;color:#43483a;white-space:pre-line;">${escapeHtml(notif.emailSignoff)}</p>
+    <hr style="border:none;border-top:1px solid #e8e6dc;margin:28px 0 16px;">
+    <p style="margin:0;font-size:12px;line-height:1.5;color:#9a9a8e;">You're getting this because you're part of a BookBuddy borrow request for "${safeTitle}". Manage notifications from Profile → Push notifications inside the app.</p>
   </div>
 </body></html>`;
-  const text = `${notif.title}\n\n${notif.body}\n\nOpen BookBuddy: ${ctaUrl}\n\n— Sent because you're part of a borrow request for "${bookTitle}".`;
+  const text =
+    `${notif.title}\n\n` +
+    `${notif.emailIntro}\n\n` +
+    `${notif.emailBody}\n\n` +
+    `${notif.ctaLabel}: ${ctaUrl}\n\n` +
+    `${notif.emailSignoff}\n\n` +
+    `— Sent because you're part of a borrow request for "${bookTitle}".`;
   return { html, text };
 }
 
