@@ -135,20 +135,32 @@ interface NotificationContent {
  * Returns null when the change doesn't warrant a notification (e.g. an
  * UPDATE where status didn't change, or a status transition the user
  * already knows about because they're the one who triggered it).
+ *
+ * Copy choices: BookBuddy is for kids in housing societies, so the tone
+ * leans warm + a touch playful — emoji on the title, first names in the
+ * body, exclamation marks where the moment earns one. The titles double
+ * as both the push banner and the email subject line, so they need to
+ * be short enough not to truncate on a phone lock screen (~40 chars).
  */
 function buildNotification(
   payload: WebhookPayload,
-  bookTitle: string
+  bookTitle: string,
+  borrowerName: string,
+  listerName: string
 ): NotificationContent | null {
   const r = payload.record;
+  // Defensive fallbacks — if the FK lookup somehow returned nothing,
+  // "your neighbour" reads better than "undefined".
+  const borrower = borrowerName || "Your neighbour";
+  const lister = listerName || "Your neighbour";
 
   if (payload.type === "INSERT") {
     // New borrow request → notify the LISTER. The borrower already knows
     // they just tapped Request.
     return {
       recipientChildId: r.lister_child_id,
-      title: "New borrow request",
-      body: `Someone wants to borrow "${bookTitle}"`,
+      title: `📚 ${borrower} wants your book!`,
+      body: `${borrower} would love to borrow "${bookTitle}" from your shelf. Tap to approve or pass.`,
       url: `/shelf?tab=incoming`,
       tag: `request-${r.id}-pending`,
     };
@@ -162,16 +174,16 @@ function buildNotification(
       case "approved":
         return {
           recipientChildId: r.borrower_child_id,
-          title: "Request approved!",
-          body: `Your request for "${bookTitle}" was approved. Tap to see contact info.`,
+          title: `🎉 ${lister} said yes!`,
+          body: `Woohoo! ${lister} approved your request for "${bookTitle}". Their contact info is now visible in BookBuddy — tap to coordinate the handover.`,
           url: `/book/${r.book_id}`,
           tag: `request-${r.id}-approved`,
         };
       case "declined":
         return {
           recipientChildId: r.borrower_child_id,
-          title: "Request declined",
-          body: `Your request for "${bookTitle}" was declined.`,
+          title: `${lister} can't share this time`,
+          body: `Bummer — ${lister} couldn't lend "${bookTitle}" right now. Plenty of other great books in your society. Tap to keep browsing.`,
           url: `/shelf?tab=outgoing`,
           tag: `request-${r.id}-declined`,
         };
@@ -180,8 +192,8 @@ function buildNotification(
         // Notify the borrower so they don't keep waiting.
         return {
           recipientChildId: r.borrower_child_id,
-          title: "Request expired",
-          body: `Your request for "${bookTitle}" timed out. You can try another book.`,
+          title: `⏰ Request timed out`,
+          body: `Your request for "${bookTitle}" expired — ${lister} didn't get a chance to respond. No worries! Try another book.`,
           url: `/`,
           tag: `request-${r.id}-expired`,
         };
@@ -189,8 +201,8 @@ function buildNotification(
         // Pickup is usually marked by the borrower → notify the lister.
         return {
           recipientChildId: r.lister_child_id,
-          title: "Book picked up",
-          body: `"${bookTitle}" has been picked up. Have fun reading!`,
+          title: `📖 ${borrower} picked up your book!`,
+          body: `"${bookTitle}" is now with ${borrower}. Hope they enjoy reading it! You'll be notified when it's returned.`,
           url: `/shelf?tab=incoming`,
           tag: `request-${r.id}-picked-up`,
         };
@@ -198,8 +210,8 @@ function buildNotification(
         // Return is marked by the borrower → notify the lister to confirm.
         return {
           recipientChildId: r.lister_child_id,
-          title: "Book returned",
-          body: `"${bookTitle}" was returned. Tap to confirm receipt.`,
+          title: `📚 "${bookTitle}" is back!`,
+          body: `${borrower} returned "${bookTitle}". Tap to confirm you got it back.`,
           url: `/shelf?tab=incoming`,
           tag: `request-${r.id}-returned`,
         };
@@ -207,8 +219,8 @@ function buildNotification(
         // Lister confirmed → notify the borrower the loop is closed.
         return {
           recipientChildId: r.borrower_child_id,
-          title: "Return confirmed",
-          body: `Thanks for returning "${bookTitle}"!`,
+          title: `🙌 Thanks for sharing!`,
+          body: `${lister} confirmed they got "${bookTitle}" back. Thanks for being a great BookBuddy!`,
           url: `/shelf?tab=outgoing`,
           tag: `request-${r.id}-confirmed`,
         };
@@ -417,17 +429,32 @@ Deno.serve(async (req) => {
     return new Response("Unexpected payload", { status: 400 });
   }
 
-  // We need the book title for the notification copy. One round-trip;
-  // skip if the book somehow doesn't exist (shouldn't happen given the
-  // FK constraint, but don't crash if it does).
-  const { data: book } = await supabase
-    .from("books")
-    .select("title")
-    .eq("id", payload.record.book_id)
-    .maybeSingle();
-  const bookTitle = book?.title ?? "a book";
+  // Fetch the three pieces of context the copy needs: book title +
+  // borrower's child name + lister's child name. Three parallel reads;
+  // service role bypasses RLS so we can pull names across parents.
+  const [bookRes, borrowerRes, listerRes] = await Promise.all([
+    supabase
+      .from("books")
+      .select("title")
+      .eq("id", payload.record.book_id)
+      .maybeSingle(),
+    supabase
+      .from("children")
+      .select("name")
+      .eq("id", payload.record.borrower_child_id)
+      .maybeSingle(),
+    supabase
+      .from("children")
+      .select("name")
+      .eq("id", payload.record.lister_child_id)
+      .maybeSingle(),
+  ]);
+  const bookTitle = (bookRes.data as { title?: string } | null)?.title ?? "a book";
+  const borrowerName =
+    (borrowerRes.data as { name?: string } | null)?.name ?? "";
+  const listerName = (listerRes.data as { name?: string } | null)?.name ?? "";
 
-  const notif = buildNotification(payload, bookTitle);
+  const notif = buildNotification(payload, bookTitle, borrowerName, listerName);
   if (!notif) {
     return new Response("No notification for this change", { status: 200 });
   }
