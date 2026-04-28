@@ -1,9 +1,21 @@
 // =====================================================================
 // send-push-notification — Supabase Edge Function (Deno runtime)
 //
-// Triggered by a Database Webhook on public.borrow_requests:
-//   - INSERT (new borrow request)        → push to the LISTER parent
-//   - UPDATE where status changed        → push to the OTHER party
+// Triggered by a Database Webhook on public.borrow_requests. We only
+// fire notifications for the four events the user can't see in real
+// time:
+//   - INSERT                       → request created → push the LISTER
+//   - UPDATE → status=approved     → push the BORROWER
+//   - UPDATE → status=declined     → push the BORROWER
+//   - UPDATE → status=auto_declined → push the BORROWER (timeout)
+//
+// We deliberately do NOT notify on picked_up / returned / confirmed_return.
+// Those transitions happen offline (the two kids meet, hand the book over,
+// later hand it back) and one party is always the one tapping the status
+// change in-app — they don't need a push for an action they just took, and
+// the other party already coordinated the handover via WhatsApp/in person.
+// Marking "returned" exists only so the lister can put the book back on
+// their available shelf for the next borrower.
 //
 // Webhook config (set up in Supabase Dashboard → Database → Webhooks):
 //   Name:     borrow_requests_push
@@ -227,45 +239,12 @@ function buildNotification(
           emailSignoff: `Happy hunting,\nTeam BookBuddy 🐛📚`,
           ctaLabel: `Find another book`,
         };
-      case "picked_up":
-        // Pickup is usually marked by the borrower → notify the lister.
-        return {
-          recipientChildId: r.lister_child_id,
-          title: `📖 ${borrower} picked up your book!`,
-          body: `"${bookTitle}" is now with ${borrower}. Hope they enjoy reading it! You'll be notified when it's returned.`,
-          url: `/shelf?tab=incoming`,
-          tag: `request-${r.id}-picked-up`,
-          emailIntro: `Hey ${lister}! 📖`,
-          emailBody: `${borrower} just picked up "${bookTitle}" from you. Off it goes on a little adventure! ✨\n\nWe hope they enjoy reading it as much as your kid did. We'll buzz you again when ${borrower} marks the book as returned — no need to keep tabs in the meantime.`,
-          emailSignoff: `Cheers,\nTeam BookBuddy 🐛📚`,
-          ctaLabel: `View my shelf`,
-        };
-      case "returned":
-        // Return is marked by the borrower → notify the lister to confirm.
-        return {
-          recipientChildId: r.lister_child_id,
-          title: `📚 "${bookTitle}" is back!`,
-          body: `${borrower} returned "${bookTitle}". Tap to confirm you got it back.`,
-          url: `/shelf?tab=incoming`,
-          tag: `request-${r.id}-returned`,
-          emailIntro: `Hi ${lister},`,
-          emailBody: `Good news — "${bookTitle}" is on its way back home. ${borrower} just marked it as returned. 📚\n\nOnce you've got the book in hand, tap below to confirm receipt and close the loop. ✅`,
-          emailSignoff: `Thanks,\nTeam BookBuddy 🐛📚`,
-          ctaLabel: `Confirm I got it back`,
-        };
-      case "confirmed_return":
-        // Lister confirmed → notify the borrower the loop is closed.
-        return {
-          recipientChildId: r.borrower_child_id,
-          title: `🙌 Thanks for sharing!`,
-          body: `${lister} confirmed they got "${bookTitle}" back. Thanks for being a great BookBuddy!`,
-          url: `/shelf?tab=outgoing`,
-          tag: `request-${r.id}-confirmed`,
-          emailIntro: `Thanks ${borrower}! 🙌`,
-          emailBody: `${lister} confirmed they got "${bookTitle}" back safely — the borrow loop is officially closed. 🎉\n\nThanks for being such a thoughtful BookBuddy. Your housing society is a little more bookish thanks to you. Ready for your next adventure? There's always another good read waiting. 📚`,
-          emailSignoff: `Keep sharing,\nTeam BookBuddy 🐛📚`,
-          ctaLabel: `Find your next read`,
-        };
+      // picked_up / returned / confirmed_return are deliberately not
+      // notified. Those happen offline — the two kids meet, hand the
+      // book over, later hand it back. One party is always the one
+      // tapping the status change, so a push for an action they just
+      // took is noise; the other party already knows because they were
+      // standing right there. Falls through to the default branch.
       default:
         return null;
     }
