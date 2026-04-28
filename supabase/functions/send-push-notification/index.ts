@@ -87,11 +87,24 @@ interface PushSubscriptionRow {
 
 const VAPID_PUBLIC_KEY = Deno.env.get("VAPID_PUBLIC_KEY")!;
 const VAPID_PRIVATE_KEY = Deno.env.get("VAPID_PRIVATE_KEY")!;
-const VAPID_SUBJECT = Deno.env.get("VAPID_SUBJECT") ?? "mailto:noreply@bookbuddy.app";
+const VAPID_SUBJECT = Deno.env.get("VAPID_SUBJECT") ?? "mailto:noreply@bookbuds.in";
+
+// Email is best-effort. If RESEND_API_KEY / EMAIL_FROM / APP_URL aren't
+// set, we still deliver push and the function returns 200 — we just log
+// once at boot so missing config is visible in the function's startup
+// log line rather than silently dropping every email.
+const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
+const EMAIL_FROM = Deno.env.get("EMAIL_FROM") ?? "";
+const APP_URL = Deno.env.get("APP_URL") ?? "";
 
 if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
   console.error(
     "[send-push] missing VAPID env vars. Set VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY in Edge Function secrets."
+  );
+}
+if (!RESEND_API_KEY || !EMAIL_FROM || !APP_URL) {
+  console.warn(
+    "[send-push] email disabled: set RESEND_API_KEY, EMAIL_FROM, APP_URL in Edge Function secrets to enable."
   );
 }
 
@@ -210,23 +223,42 @@ function buildNotification(
 // ---------- Subscription fetch + send --------------------------------
 
 /**
- * Look up parent_id for a child, then fetch all active push subscriptions
- * for that parent. Service role bypasses RLS so we can read other users'
- * children + subscriptions.
+ * Look up parent_id + parent email for a child, then fetch all active
+ * push subscriptions for that parent. Service role bypasses RLS so we
+ * can read other users' children + subscriptions.
+ *
+ * Email is denormalised onto parents (post-0007 it's NOT NULL UNIQUE,
+ * the credential column), so this is one round-trip. Returned shape
+ * splits subscriptions from email so the caller can fan out push and
+ * email in parallel.
  */
-async function fetchSubscriptionsForChild(
+interface RecipientContext {
+  email: string | null;
+  subscriptions: PushSubscriptionRow[];
+}
+
+async function fetchRecipientForChild(
   childId: string
-): Promise<PushSubscriptionRow[]> {
+): Promise<RecipientContext> {
   const { data: child, error: childErr } = await supabase
     .from("children")
-    .select("parent_id")
+    .select("parent_id, parents(email)")
     .eq("id", childId)
-    .maybeSingle();
+    .maybeSingle<{
+      parent_id: string;
+      parents: { email: string } | { email: string }[] | null;
+    }>();
 
   if (childErr || !child) {
     console.error("[send-push] child lookup failed:", childErr ?? "no row", childId);
-    return [];
+    return { email: null, subscriptions: [] };
   }
+
+  // PostgREST may return the joined parents row as either an object or
+  // a single-element array depending on the relation cardinality hint.
+  // Normalise both shapes.
+  const parents = Array.isArray(child.parents) ? child.parents[0] : child.parents;
+  const email = parents?.email ?? null;
 
   const { data: subs, error: subErr } = await supabase
     .from("push_subscriptions")
@@ -235,9 +267,98 @@ async function fetchSubscriptionsForChild(
 
   if (subErr) {
     console.error("[send-push] subscription lookup failed:", subErr);
-    return [];
+    return { email, subscriptions: [] };
   }
-  return (subs ?? []) as PushSubscriptionRow[];
+  return { email, subscriptions: (subs ?? []) as PushSubscriptionRow[] };
+}
+
+/**
+ * Minimal HTML escape for user-controlled strings dropped into the email
+ * body (book title is the only one). We don't link-render or rich-format
+ * anything; this is just a "&" → "&amp;" guard so a "Tom & Jerry"-style
+ * title doesn't break the markup.
+ */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Build a tiny inline-styled email body that mirrors the push copy and
+ * deep-links back into the app. We keep it dead simple — single-column,
+ * no images, no external CSS. That's the most reliable shape across
+ * gmail / yahoo / outlook / apple mail and dodges the "email-as-iframe"
+ * sandbox most clients use.
+ *
+ * BookBuddy's brand colour (primary green ~#5e7d3f) is matched on the
+ * CTA button. Everything else stays neutral so it reads fine in both
+ * light and dark mode email clients.
+ */
+function renderEmail(
+  notif: NotificationContent,
+  bookTitle: string
+): { html: string; text: string } {
+  const safeTitle = escapeHtml(bookTitle);
+  const safeBody = escapeHtml(notif.body);
+  // Absolute URL for the deep-link CTA. notif.url is a relative path
+  // (e.g. "/shelf?tab=incoming") because that's what the SW consumes.
+  const ctaUrl = `${APP_URL.replace(/\/$/, "")}${notif.url}`;
+  const html = `<!doctype html>
+<html><body style="margin:0;padding:24px;background:#fefcf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1a1c14;">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;padding:32px 28px;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+    <p style="margin:0 0 8px;font-size:13px;font-weight:600;letter-spacing:1px;color:#5e7d3f;text-transform:uppercase;">BookBuddy</p>
+    <h1 style="margin:0 0 12px;font-size:22px;line-height:1.25;font-weight:700;color:#1a1c14;">${escapeHtml(notif.title)}</h1>
+    <p style="margin:0 0 24px;font-size:15px;line-height:1.5;color:#43483a;">${safeBody}</p>
+    <a href="${ctaUrl}" style="display:inline-block;background:#5e7d3f;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:999px;">Open BookBuddy</a>
+    <p style="margin:32px 0 0;font-size:12px;line-height:1.5;color:#888;">You're getting this because you're part of a BookBuddy borrow request for "${safeTitle}". Manage notifications from Profile → Push notifications inside the app.</p>
+  </div>
+</body></html>`;
+  const text = `${notif.title}\n\n${notif.body}\n\nOpen BookBuddy: ${ctaUrl}\n\n— Sent because you're part of a borrow request for "${bookTitle}".`;
+  return { html, text };
+}
+
+/**
+ * Send a transactional email via Resend's HTTP API. Best-effort —
+ * returns void and logs failures rather than throwing, so a Resend
+ * outage doesn't break push delivery (which uses a different vendor).
+ */
+async function deliverEmail(
+  to: string,
+  subject: string,
+  html: string,
+  text: string
+): Promise<void> {
+  if (!RESEND_API_KEY || !EMAIL_FROM) return; // disabled by missing config
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: EMAIL_FROM,
+        to: [to],
+        subject,
+        html,
+        text,
+      }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      console.error(
+        "[send-push] resend send failed:",
+        res.status,
+        detail.slice(0, 500)
+      );
+    }
+  } catch (err) {
+    console.error("[send-push] resend fetch threw:", err);
+  }
 }
 
 /**
@@ -311,12 +432,8 @@ Deno.serve(async (req) => {
     return new Response("No notification for this change", { status: 200 });
   }
 
-  const subs = await fetchSubscriptionsForChild(notif.recipientChildId);
-  if (subs.length === 0) {
-    // Recipient hasn't enabled push (yet). Still a 200 — the in-app
-    // bell will pick it up next time they open the app.
-    return new Response("No subscriptions for recipient", { status: 200 });
-  }
+  const recipient = await fetchRecipientForChild(notif.recipientChildId);
+  const subs = recipient.subscriptions;
 
   const pushBody = {
     title: notif.title,
@@ -325,22 +442,35 @@ Deno.serve(async (req) => {
     tag: notif.tag,
   };
 
-  // Fan out in parallel — push services are slow enough that serial
-  // delivery to a 3-device household would noticeably delay the response.
-  await Promise.allSettled(subs.map((s) => deliver(s, pushBody)));
+  // Fan out push + email in parallel. Either channel can fail without
+  // affecting the other — push goes through Apple/Mozilla/Google FCM,
+  // email through Resend. Promise.allSettled so a transient failure on
+  // one doesn't reject the whole batch.
+  const tasks: Promise<unknown>[] = subs.map((s) => deliver(s, pushBody));
+  if (recipient.email) {
+    const { html, text } = renderEmail(notif, bookTitle);
+    tasks.push(deliverEmail(recipient.email, notif.title, html, text));
+  }
+  await Promise.allSettled(tasks);
 
   // Best-effort: update last_used_at so we have visibility into which
   // subscriptions are actually being delivered to. Failure is non-fatal.
-  await supabase
-    .from("push_subscriptions")
-    .update({ last_used_at: new Date().toISOString() })
-    .in(
-      "endpoint",
-      subs.map((s) => s.endpoint)
-    );
+  if (subs.length > 0) {
+    await supabase
+      .from("push_subscriptions")
+      .update({ last_used_at: new Date().toISOString() })
+      .in(
+        "endpoint",
+        subs.map((s) => s.endpoint)
+      );
+  }
 
   return new Response(
-    JSON.stringify({ delivered: subs.length, recipientChildId: notif.recipientChildId }),
+    JSON.stringify({
+      pushDelivered: subs.length,
+      emailDelivered: recipient.email ? 1 : 0,
+      recipientChildId: notif.recipientChildId,
+    }),
     { headers: { "Content-Type": "application/json" } }
   );
 });
