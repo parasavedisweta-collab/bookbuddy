@@ -411,24 +411,14 @@ async function deliver(
 
 // ---------- HTTP handler ---------------------------------------------
 
-Deno.serve(async (req) => {
-  if (req.method !== "POST") {
-    return new Response("Method not allowed", { status: 405 });
-  }
-
-  let payload: WebhookPayload;
-  try {
-    payload = await req.json();
-  } catch {
-    return new Response("Invalid JSON", { status: 400 });
-  }
-
-  if (payload.table !== "borrow_requests" || !payload.record) {
-    // Webhook misconfigured or pointed at the wrong table — fail fast
-    // so it shows up in the Edge Function logs.
-    return new Response("Unexpected payload", { status: 400 });
-  }
-
+/**
+ * Do all the slow work: fetch context, fan out push + email, update
+ * last_used_at. Pulled out of the request handler so it can run in the
+ * background via EdgeRuntime.waitUntil() while we return 200 immediately
+ * to pg_net (whose default webhook timeout is 1s — easily exceeded once
+ * Resend's HTTP round-trip is in the path).
+ */
+async function processWebhook(payload: WebhookPayload): Promise<void> {
   // Fetch the three pieces of context the copy needs: book title +
   // borrower's child name + lister's child name. Three parallel reads;
   // service role bypasses RLS so we can pull names across parents.
@@ -455,9 +445,7 @@ Deno.serve(async (req) => {
   const listerName = (listerRes.data as { name?: string } | null)?.name ?? "";
 
   const notif = buildNotification(payload, bookTitle, borrowerName, listerName);
-  if (!notif) {
-    return new Response("No notification for this change", { status: 200 });
-  }
+  if (!notif) return;
 
   const recipient = await fetchRecipientForChild(notif.recipientChildId);
   const subs = recipient.subscriptions;
@@ -492,12 +480,51 @@ Deno.serve(async (req) => {
       );
   }
 
+  console.log(
+    `[send-push] ${payload.type} ${payload.record.id}: pushDelivered=${subs.length} emailDelivered=${recipient.email ? 1 : 0}`
+  );
+}
+
+// EdgeRuntime is a Supabase-supplied global on Deno. Its waitUntil keeps
+// the function alive past the response so background work completes —
+// same idea as Cloudflare Workers' ctx.waitUntil. Typed as `unknown` so
+// the file still type-checks if Deno upgrades and removes the global.
+declare const EdgeRuntime:
+  | { waitUntil: (p: Promise<unknown>) => void }
+  | undefined;
+
+Deno.serve(async (req) => {
+  if (req.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+
+  let payload: WebhookPayload;
+  try {
+    payload = await req.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+
+  if (payload.table !== "borrow_requests" || !payload.record) {
+    // Webhook misconfigured or pointed at the wrong table — fail fast
+    // so it shows up in the Edge Function logs.
+    return new Response("Unexpected payload", { status: 400 });
+  }
+
+  // Background the slow work; return 200 immediately so pg_net's 1s
+  // webhook timeout never trips. processWebhook logs its own outcome.
+  const work = processWebhook(payload).catch((err) => {
+    console.error("[send-push] processWebhook threw:", err);
+  });
+  if (typeof EdgeRuntime !== "undefined") {
+    EdgeRuntime.waitUntil(work);
+  }
+  // Note: if EdgeRuntime is missing (older runtime) the promise is
+  // floating — Deno will still let it run to completion in practice
+  // but isn't guaranteed to. The fast path is the EdgeRuntime branch.
+
   return new Response(
-    JSON.stringify({
-      pushDelivered: subs.length,
-      emailDelivered: recipient.email ? 1 : 0,
-      recipientChildId: notif.recipientChildId,
-    }),
+    JSON.stringify({ accepted: true, type: payload.type, id: payload.record.id }),
     { headers: { "Content-Type": "application/json" } }
   );
 });
