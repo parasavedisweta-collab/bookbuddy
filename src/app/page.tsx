@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import BookCard from "@/components/BookCard";
 import GenreChips from "@/components/GenreChips";
 import { getAllBooks, getAllRequests, getCurrentChildId, getCurrentUserSocietyId } from "@/lib/userStore";
@@ -11,12 +12,35 @@ import {
 import { listChildrenForCurrentParent, isAloneInSociety } from "@/lib/supabase/children";
 import { getCurrentParent } from "@/lib/supabase/parents";
 import { fetchMyRequests } from "@/lib/supabase/requests";
+import { getSupabase } from "@/lib/supabase/client";
 import ShareAppButton from "@/components/ShareAppButton";
 import NotificationBell from "@/components/NotificationBell";
 import ListBookFab from "@/components/ListBookFab";
 import type { Genre, Book, BorrowRequest } from "@/lib/types";
 
+/**
+ * Auth-state values for the home page's render gate.
+ *   - "unknown"       : initial / probe in flight, render placeholder.
+ *   - "authenticated" : session live, render the feed.
+ *   - "redirecting"   : no session, redirect to /auth/sign-in scheduled.
+ *
+ * The gate exists because the legacy localStorage helpers (getAllBooks,
+ * getCurrentChildId) silently fall back to demo data + child id "c1"
+ * (Jenny). Rendering the home page without a session therefore shows a
+ * fake-populated grid as Jenny — which is what every WhatsApp-link
+ * recipient saw before this gate landed.
+ */
+type AuthGate = "unknown" | "authenticated" | "redirecting";
+
 export default function HomePage() {
+  const router = useRouter();
+  // Gate the entire feed render on whether we have a session. Default
+  // "unknown" shows a placeholder; we resolve to "authenticated" once a
+  // Supabase session is confirmed, or "redirecting" when there's none
+  // (and immediately router.replace to /auth/sign-in). Without this,
+  // a fresh visitor with empty localStorage falls through the legacy
+  // helpers and sees a demo-populated home as Jenny.
+  const [authGate, setAuthGate] = useState<AuthGate>("unknown");
   const [search, setSearch] = useState("");
   const [genreFilter, setGenreFilter] = useState<Genre | null>(null);
   const [allBooks, setAllBooks] = useState<Book[]>([]);
@@ -42,6 +66,46 @@ export default function HomePage() {
   // "List a book" FAB — for unregistered visitors /book/list bounces them
   // through registration, so the CTA is misleading rather than helpful.
   const [isRegistered, setIsRegistered] = useState(false);
+
+  // Auth gate. Probes the persisted Supabase session on mount and on
+  // bb_supabase_auth (fired by SupabaseAuthBootstrap on SIGNED_IN /
+  // SIGNED_OUT / TOKEN_REFRESHED). No session → router.replace to
+  // /auth/sign-in so a stranger who clicked the WhatsApp link lands on
+  // the sign-in CTA instead of a demo-populated grid pretending to be
+  // Jenny. We deliberately do NOT block the other effects below on
+  // this — they run in parallel; the render gate at the bottom is what
+  // hides the feed until auth resolves.
+  useEffect(() => {
+    let cancelled = false;
+    async function probe() {
+      try {
+        const supabase = getSupabase();
+        const { data } = await supabase.auth.getSession();
+        if (cancelled) return;
+        if (data.session?.user?.id) {
+          setAuthGate("authenticated");
+        } else {
+          setAuthGate("redirecting");
+          router.replace("/auth/sign-in");
+        }
+      } catch (err) {
+        // Network glitch / Supabase outage: treat as no-session and
+        // redirect. Better to over-redirect than to flash demo data.
+        console.warn("[home] auth probe failed, redirecting to sign-in:", err);
+        if (!cancelled) {
+          setAuthGate("redirecting");
+          router.replace("/auth/sign-in");
+        }
+      }
+    }
+    probe();
+    const onAuth = () => probe();
+    window.addEventListener("bb_supabase_auth", onAuth);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("bb_supabase_auth", onAuth);
+    };
+  }, [router]);
 
   useEffect(() => {
     const refresh = () => {
@@ -270,6 +334,23 @@ export default function HomePage() {
     societyId,
     mySupabaseChildIds,
   ]);
+
+  // Render gate: until we've confirmed a session, show a thin neutral
+  // placeholder. Without this, the legacy localStorage fallbacks (Jenny
+  // as default child id, demo books) would paint for one tick before
+  // the redirect lands — strangers from the WhatsApp link saw exactly
+  // that. Plain spinner, no logo / nav, so unauth visitors never glimpse
+  // the signed-in chrome.
+  if (authGate !== "authenticated") {
+    return (
+      <main className="flex-1 w-full flex items-center justify-center">
+        <div
+          className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin"
+          aria-label="Loading"
+        />
+      </main>
+    );
+  }
 
   return (
     <main className="flex-1 w-full max-w-2xl mx-auto">
