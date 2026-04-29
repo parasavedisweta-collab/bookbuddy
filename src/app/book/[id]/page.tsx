@@ -2,7 +2,7 @@
 
 import { use, useMemo, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { getCurrentChildId, createBorrowRequest, getAllRequests, getAllBooks, removeListedBook, replaceLocalRequestId, type DemoChildId } from "@/lib/userStore";
+import { getCurrentChildId, createBorrowRequest, getAllRequests, getAllBooks, removeListedBook, replaceLocalRequestId } from "@/lib/userStore";
 import {
   createBorrowRequest as createSupabaseBorrowRequest,
   findActiveRequest,
@@ -20,9 +20,10 @@ import { whatsappLink, phoneLink } from "@/lib/helpers";
 
 /**
  * Books and children created through the Supabase write path use UUIDs
- * (gen_random_uuid()). Local-only/demo rows use "book_…" / "c1". This
- * regex gates the dual-write: if the book id isn't a UUID there's no
- * matching Supabase row to request against, and RLS would reject.
+ * (gen_random_uuid()). Local-only rows use timestamp-based ids like
+ * "book_<ts>". This regex gates the dual-write: if the book id isn't a
+ * UUID there's no matching Supabase row to request against, and RLS
+ * would reject.
  */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -33,7 +34,7 @@ export default function BookDetailPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
-  const [currentChildId, setCurrentChildId] = useState<DemoChildId>("c1");
+  const [currentChildId, setCurrentChildId] = useState<string>("");
 
   useEffect(() => {
     setCurrentChildId(getCurrentChildId());

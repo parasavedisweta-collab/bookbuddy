@@ -8,7 +8,6 @@ import {
   getAllBooks,
   updateRequestStatus,
   removeListedBook,
-  type DemoChildId,
 } from "@/lib/userStore";
 import { fetchMyShelfBooks } from "@/lib/supabase/feed";
 import { updateBookStatus } from "@/lib/supabase/books";
@@ -275,7 +274,7 @@ function ListedBookMini({ book, onRemove, isLast }: { book: Book; onRemove: (id:
 }
 
 export default function ShelfPage() {
-  const [childId, setChildId] = useState<DemoChildId>("c1");
+  const [childId, setChildId] = useState<string>("");
   const [requests, setRequests] = useState<BorrowRequest[]>([]);
   const [books, setBooks] = useState<Book[]>([]);
   // Supabase-backed copy of this parent's books + all Supabase child IDs they

@@ -45,8 +45,8 @@ export default function HomePage() {
   const [genreFilter, setGenreFilter] = useState<Genre | null>(null);
   const [allBooks, setAllBooks] = useState<Book[]>([]);
   const [allRequests, setAllRequests] = useState<BorrowRequest[]>([]);
-  const [currentChildId, setCurrentChildId] = useState("c1");
-  const [societyId, setSocietyId] = useState("s1");
+  const [currentChildId, setCurrentChildId] = useState("");
+  const [societyId, setSocietyId] = useState("");
   // Supabase-backed feed and "mine" filter. Kept separate from localStorage
   // books so a failed Supabase call never masks local/demo data.
   const [supabaseFeed, setSupabaseFeed] = useState<Book[]>([]);
