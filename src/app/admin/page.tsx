@@ -1,33 +1,83 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getAllBooks, getAllRequests, getAllSocieties, type SocietyWithStats } from "@/lib/userStore";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { getSupabase } from "@/lib/supabase/client";
+import {
+  isAdmin,
+  adminListUsers,
+  adminListBorrowRequests,
+  type AdminUserRow,
+  type AdminBorrowRequestRow,
+} from "@/lib/supabase/adminRpcs";
+import { mapFeedRowToBook } from "@/lib/supabase/feed";
+import type { DbBookWithListerContext } from "@/lib/supabase/books";
 import type { Book, BorrowRequest } from "@/lib/types";
 
-// ─── Demo user metadata ───────────────────────────────────────────────────────
-//
-// The admin page is internal tooling and historically rendered against
-// three hard-coded demo children. Now that the user-facing app no longer
-// merges demo data into its read paths, the static list lives here so
-// admin still has a useful sandbox view without polluting userStore's
-// public surface. A real "list every user" view needs a SECURITY DEFINER
-// RPC (parents.RLS hides anyone but the caller); deferred until admin is
-// actually used in anger.
-const DEMO_CHILDREN: ReadonlyArray<{
+/**
+ * SocietyStats is computed in the admin page (not pulled from a single
+ * Supabase view) so we can join the admin-only user list against the
+ * permissively-readable books table without an extra RPC. Mirrors the
+ * old `SocietyWithStats` shape from userStore — kept locally because
+ * userStore no longer aggregates anything for admin.
+ */
+interface SocietyStats {
   id: string;
   name: string;
-  emoji: string;
-  ageGroup: string;
-}> = [
-  { id: "c1", name: "Jenny", emoji: "📚", ageGroup: "9-12" },
-  { id: "c2", name: "Arjun", emoji: "🐶", ageGroup: "6-8" },
-  { id: "c3", name: "Priya", emoji: "✨", ageGroup: "9-12" },
-];
-const DEMO_USER_META: Record<string, { phone: string; society: string; registeredAt: string }> = {
-  c1: { phone: "+91 98765 43210", society: "Sunshine Residency", registeredAt: "2024-11-01" },
-  c2: { phone: "+91 87654 32109", society: "Sunshine Residency", registeredAt: "2024-11-03" },
-  c3: { phone: "+91 76543 21098", society: "Sunshine Residency", registeredAt: "2024-11-07" },
-};
+  city: string;
+  memberCount: number;
+  bookCount: number;
+  /** ≥3 distinct parents; matches the registration picker's notion. */
+  verified: boolean;
+}
+
+/**
+ * Adapter: BorrowRequest in the admin RPC is intentionally flatter
+ * (pre-joined names, status as text) than the app's domain
+ * `BorrowRequest`. We synthesize partial nested objects so the existing
+ * Transactions/Books views — which deeply consume `r.book.title`,
+ * `r.borrower_child.name`, etc. — keep working without a wide rewrite.
+ * Anything not provided by the RPC (parent_id on the child, age_group)
+ * is left blank; admin views never read those fields.
+ */
+function mapAdminRequestToBorrowRequest(
+  r: AdminBorrowRequestRow,
+  bookMap: Map<string, Book>
+): BorrowRequest {
+  const book = bookMap.get(r.book_id);
+  return {
+    id: r.id,
+    book_id: r.book_id,
+    borrower_child_id: r.borrower_child_id,
+    lister_child_id: r.lister_child_id,
+    status: r.status as BorrowRequest["status"],
+    requested_at: r.requested_at,
+    responded_at: r.responded_at,
+    picked_up_at: r.picked_up_at,
+    returned_at: r.returned_at,
+    return_confirmed_at: r.return_confirmed_at,
+    due_date: null,
+    book,
+    borrower_child: r.borrower_child_name
+      ? {
+          id: r.borrower_child_id,
+          parent_id: "",
+          name: r.borrower_child_name,
+          bookbuddy_id: "",
+          created_at: "",
+        }
+      : undefined,
+    lister_child: r.lister_child_name
+      ? {
+          id: r.lister_child_id,
+          parent_id: "",
+          name: r.lister_child_name,
+          bookbuddy_id: "",
+          created_at: "",
+        }
+      : undefined,
+  };
+}
 
 type Tab = "users" | "transactions" | "books" | "societies";
 
@@ -77,88 +127,176 @@ function BookPill({ book }: { book: Book }) {
 }
 
 // ─── Users View ───────────────────────────────────────────────────────────────
-function UsersView({ books, requests }: { books: Book[]; requests: BorrowRequest[] }) {
+//
+// One row per (parent, child) combo. The admin RPC returns parents
+// LEFT-JOIN children, so a parent with two kids appears as two rows
+// and a parent with no kids appears once with `child_id = null`. We
+// render the kid-less rows as a "no children yet" entry — it's the
+// signal that someone signed up but never finished adding a child.
+function UsersView({
+  users,
+  books,
+  requests,
+}: {
+  users: AdminUserRow[];
+  books: Book[];
+  requests: BorrowRequest[];
+}) {
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  if (users.length === 0) {
+    return (
+      <p className="text-center text-on-surface-variant py-12 text-sm">
+        No users registered yet.
+      </p>
+    );
+  }
 
   return (
     <div className="space-y-3">
-      {DEMO_CHILDREN.map((child) => {
-        const meta = DEMO_USER_META[child.id];
-        const myListedBooks = books.filter(b => b.child_id === child.id);
+      {users.map((u) => {
+        // Each row's stable key — parent_id alone collides for parents
+        // with multiple children, so we mix in child_id (or "none" for
+        // the no-children case).
+        const rowKey = `${u.parent_id}::${u.child_id ?? "none"}`;
 
-        const lendingReqs = requests.filter(r =>
-          r.lister_child_id === child.id && ["pending", "approved", "picked_up"].includes(r.status)
-        );
-        const readingReqs = requests.filter(r =>
-          r.borrower_child_id === child.id && ["approved", "picked_up"].includes(r.status)
-        );
-        const requestedReqs = requests.filter(r =>
-          r.borrower_child_id === child.id && r.status === "pending"
-        );
-        const availableBooks = myListedBooks.filter(b =>
-          b.status === "available" && !lendingReqs.find(r => r.book_id === b.id)
+        // Books / requests for the no-children case have no child_id
+        // to match against, so the activity sections are empty.
+        const childId = u.child_id;
+        const myListedBooks = childId
+          ? books.filter((b) => b.child_id === childId)
+          : [];
+        const lendingReqs = childId
+          ? requests.filter(
+              (r) =>
+                r.lister_child_id === childId &&
+                ["pending", "approved", "picked_up"].includes(r.status)
+            )
+          : [];
+        const readingReqs = childId
+          ? requests.filter(
+              (r) =>
+                r.borrower_child_id === childId &&
+                ["approved", "picked_up"].includes(r.status)
+            )
+          : [];
+        const requestedReqs = childId
+          ? requests.filter(
+              (r) =>
+                r.borrower_child_id === childId && r.status === "pending"
+            )
+          : [];
+        const availableBooks = myListedBooks.filter(
+          (b) =>
+            b.status === "available" &&
+            !lendingReqs.find((r) => r.book_id === b.id)
         );
 
-        const isOpen = expanded === child.id;
+        const isOpen = expanded === rowKey;
 
         const sections = [
-          { label: "Listed & Available", books: availableBooks,                                          color: "text-primary",   icon: "shelves"        },
-          { label: "I'm Lending",        books: lendingReqs.map(r => r.book).filter(Boolean) as Book[],  color: "text-secondary", icon: "upload"         },
-          { label: "I'm Reading",        books: readingReqs.map(r => r.book).filter(Boolean) as Book[],  color: "text-tertiary",  icon: "menu_book"      },
-          { label: "Requested",          books: requestedReqs.map(r => r.book).filter(Boolean) as Book[], color: "text-outline",  icon: "pending"        },
+          { label: "Listed & Available", books: availableBooks,                                            color: "text-primary",   icon: "shelves"        },
+          { label: "I'm Lending",        books: lendingReqs.map((r) => r.book).filter(Boolean) as Book[],   color: "text-secondary", icon: "upload"         },
+          { label: "I'm Reading",        books: readingReqs.map((r) => r.book).filter(Boolean) as Book[],   color: "text-tertiary",  icon: "menu_book"      },
+          { label: "Requested",          books: requestedReqs.map((r) => r.book).filter(Boolean) as Book[], color: "text-outline",   icon: "pending"        },
         ];
 
+        const societyLabel = [u.society_name, u.society_city]
+          .filter(Boolean)
+          .join(", ");
+        const childLabel = childId
+          ? u.child_name
+          : "No children yet";
+        const emoji = u.child_emoji || "👤";
+
         return (
-          <div key={child.id} className="border border-outline-variant/20 rounded-xl overflow-hidden">
+          <div
+            key={rowKey}
+            className="border border-outline-variant/20 rounded-xl overflow-hidden"
+          >
             {/* Row header */}
             <button
-              onClick={() => setExpanded(isOpen ? null : child.id)}
+              onClick={() => setExpanded(isOpen ? null : rowKey)}
               className="w-full flex items-center gap-4 px-5 py-4 hover:bg-surface-container-low transition-colors text-left"
             >
               <div className="w-10 h-10 rounded-full bg-primary-container flex items-center justify-center text-xl shrink-0">
-                {child.emoji}
+                {emoji}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-3 flex-wrap">
-                  <span className="font-headline font-bold text-on-surface">{child.name}</span>
-                  <span className="font-mono text-xs text-outline">{child.id}</span>
-                  <span className="text-xs text-on-surface-variant">{meta.phone}</span>
-                  <span className="text-xs text-on-surface-variant">{meta.society}</span>
-                  <span className="text-xs text-outline">Joined {fmt(meta.registeredAt)}</span>
+                  <span className="font-headline font-bold text-on-surface">
+                    {childLabel}
+                  </span>
+                  {u.child_bookbuddy_id && (
+                    <span className="font-mono text-xs text-outline">
+                      {u.child_bookbuddy_id}
+                    </span>
+                  )}
+                  <span className="text-xs text-on-surface-variant">
+                    {u.email}
+                  </span>
+                  {u.phone && (
+                    <span className="text-xs text-on-surface-variant">
+                      {u.phone}
+                    </span>
+                  )}
+                  {societyLabel && (
+                    <span className="text-xs text-on-surface-variant">
+                      {societyLabel}
+                    </span>
+                  )}
+                  <span className="text-xs text-outline">
+                    Joined {fmt(u.registered_at)}
+                  </span>
                 </div>
                 <div className="flex items-center gap-4 mt-1.5 flex-wrap">
-                  {sections.map(s => s.books.length > 0 && (
-                    <span key={s.label} className={`text-xs font-bold ${s.color}`}>
-                      {s.books.length} {s.label}
-                    </span>
-                  ))}
-                  {sections.every(s => s.books.length === 0) && (
+                  {sections.map(
+                    (s) =>
+                      s.books.length > 0 && (
+                        <span
+                          key={s.label}
+                          className={`text-xs font-bold ${s.color}`}
+                        >
+                          {s.books.length} {s.label}
+                        </span>
+                      )
+                  )}
+                  {sections.every((s) => s.books.length === 0) && (
                     <span className="text-xs text-outline">No activity</span>
                   )}
                 </div>
               </div>
-              <span className={`material-symbols-outlined text-outline transition-transform ${isOpen ? "rotate-180" : ""}`}>
+              <span
+                className={`material-symbols-outlined text-outline transition-transform ${
+                  isOpen ? "rotate-180" : ""
+                }`}
+              >
                 expand_more
               </span>
             </button>
 
-            {/* Expanded detail */}
-            {isOpen && (
+            {/* Expanded detail — only meaningful when there's a child */}
+            {isOpen && childId && (
               <div className="border-t border-outline-variant/20 px-5 py-4 bg-surface-container-lowest grid grid-cols-2 gap-5">
-                {sections.map(s => (
+                {sections.map((s) => (
                   <div key={s.label}>
-                    <h4 className={`flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider mb-2 ${s.color}`}>
-                      <span className="material-symbols-outlined text-sm">{s.icon}</span>
+                    <h4
+                      className={`flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider mb-2 ${s.color}`}
+                    >
+                      <span className="material-symbols-outlined text-sm">
+                        {s.icon}
+                      </span>
                       {s.label}
                     </h4>
-                    {s.books.length === 0
-                      ? <p className="text-xs text-outline italic">None</p>
-                      : (
-                        <div className="flex flex-wrap gap-1.5">
-                          {s.books.map(b => <BookPill key={b.id} book={b} />)}
-                        </div>
-                      )
-                    }
+                    {s.books.length === 0 ? (
+                      <p className="text-xs text-outline italic">None</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5">
+                        {s.books.map((b) => (
+                          <BookPill key={b.id} book={b} />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -416,7 +554,7 @@ function BooksView({ books, requests }: { books: Book[]; requests: BorrowRequest
 }
 
 // ─── Societies View ───────────────────────────────────────────────────────────
-function SocietiesView({ societies }: { societies: SocietyWithStats[] }) {
+function SocietiesView({ societies }: { societies: SocietyStats[] }) {
   const [search, setSearch] = useState("");
 
   const filtered = societies.filter((s) => {
@@ -546,35 +684,174 @@ function SocietiesView({ societies }: { societies: SocietyWithStats[] }) {
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
+//
+// Auth gate: every read on this page is admin-only. We probe is_admin()
+// once on mount and route non-admins back to / before any UI renders.
+// "checking" while the probe is in flight; "ok" lets the page render;
+// "denied" should be transient (the redirect runs immediately) but is
+// captured separately so the page never renders a half-loaded admin
+// chrome to a non-admin.
+type AdminGate = "checking" | "ok" | "denied";
+
 export default function AdminPage() {
+  const router = useRouter();
+  const [gate, setGate] = useState<AdminGate>("checking");
   const [tab, setTab] = useState<Tab>("users");
+  const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [books, setBooks] = useState<Book[]>([]);
   const [requests, setRequests] = useState<BorrowRequest[]>([]);
-  const [societies, setSocieties] = useState<SocietyWithStats[]>([]);
 
+  // Auth gate. Two failure modes — no session (kicked to /auth/sign-in)
+  // and signed-in-but-not-admin (kicked to /). Both end up off this
+  // page; the distinct destinations are nicer for the human flow.
   useEffect(() => {
-    const refresh = () => {
-      setBooks(getAllBooks());
-      setRequests(getAllRequests());
-      setSocieties(getAllSocieties());
-    };
-    refresh();
-    window.addEventListener("bb_books_change", refresh);
-    window.addEventListener("bb_requests_change", refresh);
-    window.addEventListener("bb_registered_change", refresh);
+    let cancelled = false;
+    async function check() {
+      try {
+        const supabase = getSupabase();
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (cancelled) return;
+        if (!sessionData.session?.user?.id) {
+          setGate("denied");
+          router.replace("/auth/sign-in");
+          return;
+        }
+        const allowed = await isAdmin();
+        if (cancelled) return;
+        if (!allowed) {
+          setGate("denied");
+          router.replace("/");
+          return;
+        }
+        setGate("ok");
+      } catch (err) {
+        console.error("[admin] gate check failed:", err);
+        if (!cancelled) {
+          setGate("denied");
+          router.replace("/");
+        }
+      }
+    }
+    check();
     return () => {
-      window.removeEventListener("bb_books_change", refresh);
-      window.removeEventListener("bb_requests_change", refresh);
-      window.removeEventListener("bb_registered_change", refresh);
+      cancelled = true;
     };
-  }, []);
+  }, [router]);
+
+  // Fetch data in parallel once admin status is confirmed. Kept
+  // separate from the gate effect so a slow data load doesn't block
+  // the gate's redirect, and so we never issue the (admin-only) RPCs
+  // for a non-admin caller.
+  useEffect(() => {
+    if (gate !== "ok") return;
+    let cancelled = false;
+    async function load() {
+      try {
+        const supabase = getSupabase();
+        const [userRows, requestRows, bookRowsResult] = await Promise.all([
+          adminListUsers(),
+          adminListBorrowRequests(),
+          // books.SELECT is permissive RLS, so admin reads it directly
+          // via the same join-on-children pattern used by the home feed.
+          // Reuse mapFeedRowToBook to keep the cover/null-handling rules
+          // in one place.
+          supabase
+            .from("books")
+            .select(
+              `id, child_id, title, author, isbn, description, category,
+               cover_url, cover_source, status, listed_at, metadata,
+               child:children!inner(id, name, emoji, society_id, parent_id)`
+            )
+            .neq("status", "removed")
+            .order("listed_at", { ascending: false }),
+        ]);
+        if (cancelled) return;
+
+        const bookRows = (bookRowsResult.data ??
+          []) as unknown as DbBookWithListerContext[];
+        const mappedBooks = bookRows.map(mapFeedRowToBook);
+        const bookMap = new Map(mappedBooks.map((b) => [b.id, b]));
+
+        const mappedRequests = requestRows.map((r) =>
+          mapAdminRequestToBorrowRequest(r, bookMap)
+        );
+
+        setUsers(userRows);
+        setBooks(mappedBooks);
+        setRequests(mappedRequests);
+      } catch (err) {
+        console.error("[admin] data load failed:", err);
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [gate]);
+
+  // Compute society stats from the user + book rows we already fetched.
+  // Member count = distinct parents per society (admin RPC handles the
+  // RLS); book count = books whose child.society_id matches.
+  const societies: SocietyStats[] = useMemo(() => {
+    const map = new Map<string, SocietyStats>();
+    const parentsBySociety = new Map<string, Set<string>>();
+
+    for (const u of users) {
+      if (!u.society_id) continue;
+      if (!map.has(u.society_id)) {
+        map.set(u.society_id, {
+          id: u.society_id,
+          name: u.society_name ?? "—",
+          city: u.society_city ?? "",
+          memberCount: 0,
+          bookCount: 0,
+          verified: false,
+        });
+      }
+      let set = parentsBySociety.get(u.society_id);
+      if (!set) {
+        set = new Set<string>();
+        parentsBySociety.set(u.society_id, set);
+      }
+      set.add(u.parent_id);
+    }
+    for (const [sid, set] of parentsBySociety.entries()) {
+      const s = map.get(sid);
+      if (s) s.memberCount = set.size;
+    }
+    for (const b of books) {
+      const s = map.get(b.society_id);
+      if (s) s.bookCount++;
+    }
+    for (const s of map.values()) s.verified = s.memberCount >= 3;
+    return Array.from(map.values());
+  }, [users, books]);
 
   const stats = {
-    users:   DEMO_CHILDREN.length,
-    books:   books.length,
-    active:  requests.filter(r => r.status === "picked_up" || r.status === "approved").length,
-    pending: requests.filter(r => r.status === "pending").length,
+    // Distinct parents (a parent with two children appears twice in
+    // the RPC payload but should only count once).
+    users: new Set(users.map((u) => u.parent_id)).size,
+    books: books.length,
+    active: requests.filter(
+      (r) => r.status === "picked_up" || r.status === "approved"
+    ).length,
+    pending: requests.filter((r) => r.status === "pending").length,
   };
+
+  // Render gate. While the auth probe is in flight, show a thin
+  // spinner — this is the admin chrome's first paint, so a bare div
+  // is better than flashing the full layout for a non-admin who's
+  // about to be redirected.
+  if (gate !== "ok") {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-surface">
+        <div
+          className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin"
+          aria-label="Checking admin access"
+        />
+      </div>
+    );
+  }
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
     { id: "users",        label: "Users",        icon: "group"      },
@@ -593,7 +870,7 @@ export default function AdminPage() {
           </div>
           <div>
             <h1 className="font-headline font-extrabold text-on-surface text-lg leading-none">BookBuds Admin</h1>
-            <p className="text-xs text-outline mt-0.5">All societies · Demo data</p>
+            <p className="text-xs text-outline mt-0.5">All societies · Live data</p>
           </div>
         </div>
         <a href="/" className="text-sm text-primary font-bold flex items-center gap-1 hover:underline">
@@ -638,7 +915,7 @@ export default function AdminPage() {
       {/* Content */}
       <div className="p-6">
         <div className="bg-surface-container-lowest rounded-xl shadow-sm p-6">
-          {tab === "users"        && <UsersView        books={books} requests={requests} />}
+          {tab === "users"        && <UsersView        users={users} books={books} requests={requests} />}
           {tab === "transactions" && <TransactionsView books={books} requests={requests} />}
           {tab === "books"        && <BooksView        books={books} requests={requests} />}
           {tab === "societies"    && <SocietiesView    societies={societies} />}
