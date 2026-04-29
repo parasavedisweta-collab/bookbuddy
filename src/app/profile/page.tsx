@@ -7,9 +7,7 @@ import {
   getCurrentChildId,
   getAllBooks,
   getAllRequests,
-  DEMO_CHILDREN,
   clearLocalUserData,
-  type DemoChildId,
 } from "@/lib/userStore";
 import { getSupabase } from "@/lib/supabase/client";
 import { getCurrentParent } from "@/lib/supabase/parents";
@@ -20,9 +18,8 @@ import PushSettingsToggle from "@/components/PushSettingsToggle";
 
 export default function ProfilePage() {
   const router = useRouter();
-  const [childId, setChildId] = useState<DemoChildId>("c1");
   const [childName, setChildName] = useState("Reader");
-  const [societyName, setSocietyName] = useState("Sunshine Residency");
+  const [societyName, setSocietyName] = useState("");
   const [totalListed, setTotalListed] = useState(0);
   const [totalLent, setTotalLent] = useState(0);
   // Signing-out runs Supabase.signOut() + clears localStorage + navigates.
@@ -39,12 +36,11 @@ export default function ProfilePage() {
 
   const refresh = useCallback(() => {
     const id = getCurrentChildId();
-    setChildId(id);
 
-    const demoChild = DEMO_CHILDREN.find((c) => c.id === id);
-    if (demoChild) setChildName(demoChild.name);
-
-    // Prefer registration data if it matches
+    // Registration data is the source of truth for the visible name.
+    // (Pre-cleanup the demo-child fallback ran first; with that gone,
+    // unregistered visitors no longer reach this page — the home gate
+    // redirects them to /auth/sign-in.)
     const stored = localStorage.getItem("bb_child");
     if (stored) {
       const parsed = JSON.parse(stored);

@@ -56,7 +56,7 @@ export default function AuthCallbackPage() {
         if (parent && parent.society_id) {
           // Rehydrate localStorage from Supabase before routing home.
           // Without this, the legacy getCurrentChildId() in userStore.ts
-          // falls back to demo "c1" (Jenny) and home paints the wrong
+          // returns "" and home/profile/shelf paint their unregistered
           // identity until/unless the user manually picks their real
           // child from the switcher. Two round-trips here (children +
           // society) but they parallelise; it's < 200ms in practice.

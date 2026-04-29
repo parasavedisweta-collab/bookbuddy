@@ -1,10 +1,28 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getAllBooks, getAllRequests, DEMO_CHILDREN, getAllSocieties, type SocietyWithStats } from "@/lib/userStore";
+import { getAllBooks, getAllRequests, getAllSocieties, type SocietyWithStats } from "@/lib/userStore";
 import type { Book, BorrowRequest } from "@/lib/types";
 
 // ─── Demo user metadata ───────────────────────────────────────────────────────
+//
+// The admin page is internal tooling and historically rendered against
+// three hard-coded demo children. Now that the user-facing app no longer
+// merges demo data into its read paths, the static list lives here so
+// admin still has a useful sandbox view without polluting userStore's
+// public surface. A real "list every user" view needs a SECURITY DEFINER
+// RPC (parents.RLS hides anyone but the caller); deferred until admin is
+// actually used in anger.
+const DEMO_CHILDREN: ReadonlyArray<{
+  id: string;
+  name: string;
+  emoji: string;
+  ageGroup: string;
+}> = [
+  { id: "c1", name: "Jenny", emoji: "📚", ageGroup: "9-12" },
+  { id: "c2", name: "Arjun", emoji: "🐶", ageGroup: "6-8" },
+  { id: "c3", name: "Priya", emoji: "✨", ageGroup: "9-12" },
+];
 const DEMO_USER_META: Record<string, { phone: string; society: string; registeredAt: string }> = {
   c1: { phone: "+91 98765 43210", society: "Sunshine Residency", registeredAt: "2024-11-01" },
   c2: { phone: "+91 87654 32109", society: "Sunshine Residency", registeredAt: "2024-11-03" },

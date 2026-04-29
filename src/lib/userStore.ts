@@ -1,20 +1,19 @@
 /**
- * Demo-mode user store.
- * Persists current child ID and borrow requests in localStorage so two browser
- * tabs (or a single tab with the switcher) can simulate two users interacting.
+ * localStorage-backed user store.
+ *
+ * Persists the current device's child id, listed books, and borrow
+ * requests in localStorage. Originally seeded with hard-coded "demo"
+ * children/books for the prototype phase; that demo data has been
+ * removed now that the app is live and every reader path is gated on
+ * a real Supabase session. What remains is the cross-device cache that
+ * sits in front of Supabase reads (mostly to keep base64 cover photos
+ * accessible while Supabase Storage upload is unwired).
+ *
+ * Read paths return [] when localStorage is empty — there is no
+ * "default" identity any more. Pages that depend on a real child id
+ * either route through /auth/* or check the Supabase session first.
  */
 import type { BorrowRequest, Book, Child } from "./types";
-import { DEMO_BOOKS, DEMO_BORROW_REQUESTS } from "./demoData";
-
-export const DEMO_CHILDREN = [
-  { id: "c1", name: "Jenny",  emoji: "📚", ageGroup: "9-12" },
-  { id: "c2", name: "Arjun",  emoji: "🐶", ageGroup: "6-8"  },
-  { id: "c3", name: "Priya",  emoji: "✨", ageGroup: "9-12" },
-] as const;
-
-
-/** All child IDs are plain strings; demo IDs happen to be "c1"/"c2"/"c3". */
-export type DemoChildId = string;
 
 /* ── Societies ───────────────────────────────────────────────── */
 
@@ -24,17 +23,13 @@ export interface Society {
   city: string;
 }
 
-export const DEMO_SOCIETIES: Society[] = [
-  { id: "s1", name: "Green Meadows", city: "Mumbai" },
-];
-
 /** Slug a free-text society name + city into a stable ID. */
 export function societyNameToId(name: string, city: string = ""): string {
   const slug = (s: string) =>
     s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   const n = slug(name);
   const c = slug(city);
-  if (!n) return "s1";
+  if (!n) return "";
   return c ? `s_${n}_${c}` : `s_${n}`;
 }
 
@@ -86,24 +81,18 @@ function readRegisteredChildren(): RegisteredChild[] {
   }
 }
 
-/** Returns the child record (demo or registered) for a given id, or null. */
+/** Returns the registered child record for a given id, or null. */
 export function findChildById(id: string) {
-  const demo = DEMO_CHILDREN.find((c) => c.id === id);
-  if (demo) return { id: demo.id, name: demo.name, emoji: demo.emoji, ageGroup: demo.ageGroup, societyId: "s1" };
   const reg = readRegisteredChildren().find((c) => c.id === id);
   if (reg) return { id: reg.id, name: reg.name, emoji: reg.emoji, ageGroup: reg.ageGroup, societyId: reg.societyId };
   return null;
 }
 
-/** All children: demo + registered. */
+/** All registered children on this device. */
 export function getAllChildren(): Array<{ id: string; name: string; emoji: string; ageGroup: string; societyId: string }> {
-  const reg = readRegisteredChildren().map((c) => ({
+  return readRegisteredChildren().map((c) => ({
     id: c.id, name: c.name, emoji: c.emoji, ageGroup: c.ageGroup, societyId: c.societyId,
   }));
-  return [
-    ...DEMO_CHILDREN.map((c) => ({ ...c, societyId: "s1" })),
-    ...reg,
-  ];
 }
 
 /** Normalise a phone number to digits only for comparison. */
@@ -143,9 +132,12 @@ export function registerNewChild(params: {
     id,
     name: params.name,
     ageGroup: params.ageGroup,
-    societyId: params.societyId ?? "s1",
-    societyName: params.societyName ?? "Green Meadows",
-    societyCity: params.societyCity ?? "Mumbai",
+    // Empty defaults — the registration flow is the single producer of
+    // these values now and always passes them. Falling back to a
+    // hard-coded "Green Meadows" was demo-era convenience.
+    societyId: params.societyId ?? "",
+    societyName: params.societyName ?? "",
+    societyCity: params.societyCity ?? "",
     emoji: "📖",
     parentPhone: params.parentPhone,
   };
@@ -165,16 +157,14 @@ export interface SocietyWithStats extends Society {
   verified: boolean;
 }
 
-/** All known societies (demo + registered), with member and book counts. */
+/** All societies known to this device (from registered children), with
+ *  member and book counts. Used by the registration picker and admin tool. */
 export function getAllSocieties(): SocietyWithStats[] {
   const map = new Map<string, SocietyWithStats>();
 
-  // Seed with demo societies
-  for (const s of DEMO_SOCIETIES) {
-    map.set(s.id, { ...s, memberCount: 0, bookCount: 0, verified: false });
-  }
-
-  // Pull in registered-child societies
+  // Pull in registered-child societies. With demo data removed, this is
+  // the only seed source — empty on a fresh device until the user
+  // completes registration and registerNewChild writes a row.
   for (const r of readRegisteredChildren()) {
     if (!map.has(r.societyId)) {
       map.set(r.societyId, {
@@ -188,18 +178,13 @@ export function getAllSocieties(): SocietyWithStats[] {
     }
   }
 
-  // Count members (demo children + registered)
-  // DEMO_CHILDREN are all in s1 by convention
-  for (const _c of DEMO_CHILDREN) {
-    const s = map.get("s1");
-    if (s) s.memberCount++;
-  }
+  // Count members from the same registered-children set.
   for (const r of readRegisteredChildren()) {
     const s = map.get(r.societyId);
     if (s) s.memberCount++;
   }
 
-  // Count books
+  // Count books listed locally.
   for (const b of getAllBooks()) {
     const s = map.get(b.society_id);
     if (s) s.bookCount++;
@@ -255,18 +240,25 @@ const REMOVED_KEY  = "bb_removed_books";
 
 /* ── Current user ─────────────────────────────────────────── */
 
-export function getCurrentChildId(): DemoChildId {
-  if (typeof window === "undefined") return "c1";
-  return (localStorage.getItem(CHILD_KEY) as DemoChildId) ?? "c1";
+/**
+ * Active child id on this device, or empty string if none. Returns "" on
+ * SSR (no localStorage) and on fresh devices that haven't completed
+ * registration. Callers must handle the empty case — there's no longer
+ * a Jenny-shaped fallback.
+ */
+export function getCurrentChildId(): string {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem(CHILD_KEY) ?? "";
 }
 
-/** Returns the society ID for the currently active child. */
+/** Society ID for the currently active child, or empty string if none. */
 export function getCurrentUserSocietyId(): string {
-  const child = findChildById(getCurrentChildId());
-  return child?.societyId ?? "s1";
+  const id = getCurrentChildId();
+  if (!id) return "";
+  return findChildById(id)?.societyId ?? "";
 }
 
-export function setCurrentChildId(id: DemoChildId) {
+export function setCurrentChildId(id: string) {
   localStorage.setItem(CHILD_KEY, id);
   window.dispatchEvent(new Event("bb_user_change"));
 }
@@ -314,11 +306,12 @@ export function clearLocalUserData() {
 /**
  * Rehydrate localStorage from Supabase after a fresh sign-in.
  *
- * Background: a lot of read-side helpers in this file (`getCurrentChildId`,
- * `getCurrentUserSocietyId`, etc.) fall back to demo data ("c1" → Jenny)
- * when localStorage is empty. After sign-out we wipe localStorage; on
- * sign-back-in the empty store + demo fallback would render Jenny instead
- * of the user's real child.
+ * Read-side helpers in this file (`getCurrentChildId`,
+ * `getCurrentUserSocietyId`, etc.) read from localStorage and return
+ * empty strings when nothing is set. After sign-out we wipe localStorage;
+ * without this hydrate call on sign-back-in, the legacy readers would
+ * stay empty and pages dependent on them would render with no child /
+ * society context until a manual switch.
  *
  * Call this from /auth/callback after `getCurrentParent()` confirms the
  * user is registered. Pass the parent and their first child (or whichever
@@ -350,8 +343,8 @@ export function hydrateLocalFromSupabase(params: {
     societyCity,
   } = params;
 
-  // Active child pointer. Without this, getCurrentChildId() returns "c1"
-  // and the home page renders Jenny.
+  // Active child pointer. Without this, getCurrentChildId() returns "" and
+  // pages depending on a real child id render their unregistered state.
   localStorage.setItem(CHILD_KEY, childId);
 
   // Registered-children list. Drives the society / member lookups in the
@@ -413,17 +406,13 @@ function writeLocalRequests(reqs: BorrowRequest[]) {
   window.dispatchEvent(new Event("bb_requests_change"));
 }
 
-/** All requests: demo seed + locally created/mutated ones.
- *  Local entries override demo entries with the same ID. */
+/** All requests on this device. */
 export function getAllRequests(): BorrowRequest[] {
-  const local = readLocalRequests();
-  const localIds = new Set(local.map((r) => r.id));
-  const deduped = DEMO_BORROW_REQUESTS.filter((r) => !localIds.has(r.id));
-  return [...deduped, ...local];
+  return readLocalRequests();
 }
 
 /** Create a new borrow request from the current user for a book. */
-export function createBorrowRequest(bookId: string, borrowerChildId: DemoChildId): BorrowRequest | null {
+export function createBorrowRequest(bookId: string, borrowerChildId: string): BorrowRequest | null {
   const allB = getAllBooks();
   const book = allB.find((b) => b.id === bookId);
   if (!book) return null;
@@ -435,7 +424,7 @@ export function createBorrowRequest(bookId: string, borrowerChildId: DemoChildId
     id: `br_${Date.now()}`,
     book_id: bookId,
     borrower_child_id: borrowerChildId,
-    lister_child_id: book.child_id as DemoChildId,
+    lister_child_id: book.child_id,
     status: "pending",
     requested_at: new Date().toISOString(),
     responded_at: null,
@@ -495,11 +484,11 @@ function readRemovedIds(): Set<string> {
   }
 }
 
-/** All books: demo seed + locally listed ones, minus removed.
+/** All locally-listed books on this device, minus removed.
  *  Status is overlaid from active borrow requests so "borrowed" is always accurate. */
 export function getAllBooks(): Book[] {
   const removed = readRemovedIds();
-  const books = [...DEMO_BOOKS, ...readLocalBooks()].filter((b) => !removed.has(b.id));
+  const books = readLocalBooks().filter((b) => !removed.has(b.id));
 
   const requests = getAllRequests();
   const borrowedIds = new Set(
@@ -618,18 +607,7 @@ export function updateRequestStatus(
       returned_at: status === "returned" ? new Date().toISOString() : local[idx].returned_at,
     };
     writeLocalRequests(local);
-  } else {
-    // It's a demo request — promote it to local so we can mutate it
-    const demo = DEMO_BORROW_REQUESTS.find((r) => r.id === requestId);
-    if (demo) {
-      const updated = {
-        ...demo,
-        status,
-        responded_at: status === "approved" || status === "declined" ? new Date().toISOString() : demo.responded_at,
-        picked_up_at: status === "picked_up" ? new Date().toISOString() : demo.picked_up_at,
-        returned_at: status === "returned" ? new Date().toISOString() : demo.returned_at,
-      };
-      writeLocalRequests([...local, updated]);
-    }
   }
+  // No fallback — pre-cleanup we promoted demo requests to local on
+  // first mutation; with demo data gone there's nothing to promote.
 }
