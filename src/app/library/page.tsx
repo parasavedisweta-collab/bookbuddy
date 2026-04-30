@@ -592,13 +592,23 @@ function LibraryBrowse({ society }: { society: PendingSociety }) {
           // already does ILIKE on name; we add the city check here so
           // a "Sunshine Society" in Delhi doesn't claim books listed
           // under "Sunshine Society" in Mumbai.
+          // Name matching is substring in either direction: Nominatim
+          // often returns a shorter form ("NRI Complex") while Supabase
+          // has the fuller name registered by the first member
+          // ("Seawoods NRI Complex"). The RPC's ILIKE already surfaces
+          // the row; we just need to confirm it's the same society, not
+          // a different one in the same city.
           const cityKey = society.city.trim().toLowerCase();
           const nameKey = society.name.trim().toLowerCase();
-          const hit = matches.find(
-            (m) =>
-              m.name.trim().toLowerCase() === nameKey &&
-              m.city.trim().toLowerCase() === cityKey
-          );
+          const hit = matches.find((m) => {
+            const mName = m.name.trim().toLowerCase();
+            const mCity = m.city.trim().toLowerCase();
+            const nameMatch =
+              mName === nameKey ||
+              mName.includes(nameKey) ||
+              nameKey.includes(mName);
+            return nameMatch && mCity === cityKey;
+          });
           if (hit) {
             societyId = hit.id;
             // Patch localStorage so future page loads (e.g. a refresh
