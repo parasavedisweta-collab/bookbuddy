@@ -15,6 +15,7 @@ import { fetchMyRequests } from "@/lib/supabase/requests";
 import { getSupabase } from "@/lib/supabase/client";
 import ShareAppButton from "@/components/ShareAppButton";
 import NotificationBell from "@/components/NotificationBell";
+import HelpButton from "@/components/HelpButton";
 import ListBookFab from "@/components/ListBookFab";
 import type { Genre, Book, BorrowRequest } from "@/lib/types";
 
@@ -367,7 +368,13 @@ export default function HomePage() {
               BookBuds
             </span>
           </div>
-          <NotificationBell />
+          {/* Right-side icon group: help + notifications. HelpButton on
+              the left so the popover (anchored to its right edge) doesn't
+              collide with the bell's tap target. */}
+          <div className="flex items-center gap-2">
+            <HelpButton />
+            <NotificationBell />
+          </div>
         </div>
 
         {/* Search */}
