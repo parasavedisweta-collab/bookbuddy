@@ -19,6 +19,7 @@ import {
 import { createParent, getCurrentParent } from "@/lib/supabase/parents";
 import { createChild } from "@/lib/supabase/children";
 import { getCurrentUserId } from "@/lib/supabase/client";
+import { subscribeToPush } from "@/lib/push";
 
 interface NominatimResult {
   place_id: number;
@@ -71,7 +72,12 @@ export default function ChildSetupPage() {
   const router = useRouter();
   const [childName, setChildName] = useState("");
   const [phone, setPhone] = useState("");
-  const [consent, setConsent] = useState(false);
+  // Push-notifications opt-in. Required to submit; the actual subscribe
+  // call fires after the Supabase writes succeed (we need a parent row
+  // for the push_subscriptions FK). Users on iOS without Add-to-Home
+  // Screen still need to tick this — the subscribe will no-op in that
+  // case and the Profile push toggle later guides them through install.
+  const [allowPush, setAllowPush] = useState(false);
   const [loading, setLoading] = useState(false);
   // Auth gate: must be signed in (Google or email-OTP) before this page
   // is even useful — `parents.id = auth.uid()` makes the createParent
@@ -302,7 +308,7 @@ export default function ChildSetupPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!childName || !phoneValid || !consent || !chosen) return;
+    if (!childName || !phoneValid || !allowPush || !chosen) return;
     setSubmitError(null);
     setLoading(true);
 
@@ -399,6 +405,24 @@ export default function ChildSetupPage() {
       societyCity: chosen.city,
       parentPhone: phoneDigits,
     });
+
+    // Best-effort push subscribe. The user ticked "Allow notifications"
+    // to get here, so we run the full pipeline now that the parents row
+    // exists (push_subscriptions FK requires it). Failures don't block
+    // navigation — Profile's PushSettingsToggle is the recovery surface
+    // for: iOS users who need to install the PWA first, users who deny
+    // the OS prompt, or transient errors. Logged for visibility but
+    // intentionally not surfaced to the user mid-flow.
+    try {
+      const ok = await subscribeToPush();
+      if (!ok) {
+        console.warn(
+          "[child-setup] subscribeToPush returned false; user can re-enable from Profile"
+        );
+      }
+    } catch (err) {
+      console.warn("[child-setup] subscribeToPush threw:", err);
+    }
 
     router.push("/auth/success");
     setLoading(false);
@@ -858,18 +882,33 @@ export default function ChildSetupPage() {
           )}
         </div>
 
-        {/* Consent */}
-        <label className="flex items-start gap-3 cursor-pointer">
+        {/* Push-notifications opt-in. Required to submit — borrow
+            requests fall flat without a way to ping the lister, so we
+            ask up-front. Users can later toggle off from Profile if
+            they change their mind. */}
+        <label className="flex items-start gap-3 cursor-pointer bg-surface-container-low rounded-xl p-4">
           <input
             type="checkbox"
-            checked={consent}
-            onChange={(e) => setConsent(e.target.checked)}
+            checked={allowPush}
+            onChange={(e) => setAllowPush(e.target.checked)}
             className="mt-1 w-5 h-5 rounded border-outline-variant text-primary focus:ring-primary-container"
           />
-          <span className="text-on-surface font-medium text-sm leading-tight">
-            I confirm that I am a resident of the selected society and I consent
-            to my child participating in BookBuds.
-          </span>
+          <div className="flex-1 leading-tight">
+            <p className="text-on-surface font-bold text-sm flex items-center gap-1.5">
+              <span
+                className="material-symbols-outlined text-primary text-base"
+                style={{ fontVariationSettings: "'FILL' 1" }}
+              >
+                notifications_active
+              </span>
+              Allow push notifications
+            </p>
+            <p className="text-xs text-on-surface-variant mt-1">
+              We&apos;ll let you know when neighbours request your books or
+              reply to yours. You can change this any time from your
+              profile.
+            </p>
+          </div>
         </label>
 
         {submitError && (
@@ -892,7 +931,7 @@ export default function ChildSetupPage() {
           disabled={
             !childName ||
             !phoneValid ||
-            !consent ||
+            !allowPush ||
             !chosen ||
             loading
           }
@@ -900,11 +939,6 @@ export default function ChildSetupPage() {
           {loading ? "Creating..." : "Create Account"}
           <span className="material-symbols-outlined">arrow_forward</span>
         </Button>
-
-        <p className="text-center text-xs text-on-surface-variant">
-          By creating an account, you agree to our Terms of Service and Privacy
-          Policy.
-        </p>
       </form>
     </main>
   );
