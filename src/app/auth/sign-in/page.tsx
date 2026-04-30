@@ -30,7 +30,6 @@ import {
   sendEmailOtp,
   verifyEmailOtp,
 } from "@/lib/supabase/auth";
-import { getCurrentParent } from "@/lib/supabase/parents";
 
 type Mode = "choose" | "email-entry" | "code-entry";
 
@@ -79,14 +78,12 @@ export default function SignInPage() {
       setLoading(false);
       return;
     }
-    // Session is live. Decide where to send them.
-    const parent = await getCurrentParent();
-    setLoading(false);
-    if (parent && parent.society_id) {
-      router.replace("/");
-    } else {
-      router.replace("/auth/child-setup");
-    }
+    // Delegate routing + localStorage hydration to /auth/callback so the
+    // email-OTP and Google paths share one finalisation flow. Without
+    // this, returning users on a fresh device land with empty
+    // localStorage and the profile/home pages render the default
+    // "Reader" identity instead of their real name + society.
+    router.replace("/auth/callback");
   }
 
   /**
