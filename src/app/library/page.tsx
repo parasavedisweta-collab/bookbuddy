@@ -20,15 +20,18 @@
  */
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase/client";
 import {
   publicSearchSocieties,
+  publicListBooksForSociety,
   setPendingSociety,
   getPendingSociety,
+  clearPendingSociety,
   type PublicSocietyRow,
+  type PublicBookRow,
   type PendingSociety,
 } from "@/lib/supabase/publicBrowse";
 import { suggestCities, canonicaliseCity } from "@/lib/cities";
@@ -121,10 +124,7 @@ export default function LibraryPage() {
   }
 
   if (mode === "browse") {
-    // Browse view ships in chunk 3. For now, a placeholder so a
-    // reload after picking a society doesn't drop the user into the
-    // picker again.
-    return <BrowsePlaceholder society={pendingSociety!} />;
+    return <LibraryBrowse society={pendingSociety!} />;
   }
 
   return <LibraryPicker />;
@@ -548,51 +548,394 @@ function LibraryPicker() {
 }
 
 /* ──────────────────────────────────────────────────────────────────
- * Browse-mode placeholder
+ * Browse — Screens 3 (empty) and 4 (populated)
  * ──────────────────────────────────────────────────────────────────
+ *
+ * Renders the post-pick view. Pulls books for the chosen society via
+ * the SECURITY DEFINER public RPC. Two paths:
+ *   - 0 books: "Be the first to start the library" empty state with
+ *     two CTAs (sign up / WhatsApp share).
+ *   - 1+ books: persistent "Unlock Borrowing!" banner + search + genre
+ *     filter chips + 2-column grid.
+ *
+ * Cards are non-tappable for now — anonymous book detail with a locked
+ * borrow CTA can come in a follow-up. Today the path forward is "tap
+ * the banner / sign up / pick a different society".
  */
 
-function BrowsePlaceholder({ society }: { society: PendingSociety }) {
+function LibraryBrowse({ society }: { society: PendingSociety }) {
+  const [books, setBooks] = useState<PublicBookRow[] | null>(null);
+  const [search, setSearch] = useState("");
+  const [genreFilter, setGenreFilter] = useState<string | null>(null);
+
+  // Fetch books on mount. We only have a society UUID for entries that
+  // came from the Supabase typeahead — GPS / OSM / manual picks have
+  // `id = ""` because the row doesn't exist yet (it'll be created on
+  // sign-up via findOrCreateSociety). For those, the empty-state copy
+  // is correct: there are no books in a society that doesn't exist.
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (!society.id) {
+        if (!cancelled) setBooks([]);
+        return;
+      }
+      const rows = await publicListBooksForSociety(society.id);
+      if (!cancelled) setBooks(rows);
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [society.id]);
+
+  // Genre chips — "All Books" + every distinct category in the
+  // current society's listings. Cap to a sensible width by dropping
+  // duplicates and sorting alphabetically.
+  const genres = useMemo(() => {
+    if (!books) return [];
+    const set = new Set<string>();
+    for (const b of books) {
+      if (b.category) set.add(b.category);
+    }
+    return Array.from(set).sort();
+  }, [books]);
+
+  const filtered = useMemo(() => {
+    if (!books) return [];
+    let out = books;
+    if (genreFilter) out = out.filter((b) => b.category === genreFilter);
+    const q = search.trim().toLowerCase();
+    if (q) {
+      out = out.filter(
+        (b) =>
+          b.title.toLowerCase().includes(q) ||
+          b.author?.toLowerCase().includes(q) ||
+          b.child_name.toLowerCase().includes(q)
+      );
+    }
+    // Sort: available first, then by listed_at desc.
+    return [...out].sort((a, b) => {
+      const aAvail = a.status === "available" ? 0 : 1;
+      const bAvail = b.status === "available" ? 0 : 1;
+      if (aAvail !== bAvail) return aAvail - bAvail;
+      return (
+        new Date(b.listed_at).getTime() - new Date(a.listed_at).getTime()
+      );
+    });
+  }, [books, genreFilter, search]);
+
+  function handleSwitchSociety() {
+    if (
+      window.confirm(
+        "Switch societies? You'll go back to the picker."
+      )
+    ) {
+      clearPendingSociety();
+      window.location.assign("/library");
+    }
+  }
+
+  function handleShareWhatsApp() {
+    const url =
+      process.env.NEXT_PUBLIC_APP_URL ||
+      (typeof window !== "undefined" ? window.location.origin : "");
+    const text = `Hey! Let's start a book-sharing club for ${society.name} on BookBuds 📚 — list one book, borrow many. ${url}`;
+    if (typeof navigator !== "undefined" && navigator.share) {
+      navigator
+        .share({ title: "BookBuds", text, url })
+        .catch(() => {
+          /* user cancelled — silent */
+        });
+      return;
+    }
+    // WhatsApp Web/desktop fallback.
+    const wa = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(wa, "_blank", "noopener,noreferrer");
+  }
+
+  const isEmpty = books !== null && books.length === 0;
+  const isLoading = books === null;
+
   return (
-    <main className="flex-1 w-full max-w-xl mx-auto px-5 pb-24">
-      <header className="pt-5 flex items-center justify-between">
-        <div className="flex items-center gap-2">
+    <main className="flex-1 w-full max-w-2xl mx-auto px-5 pb-24">
+      {/* Top bar — society label on the left, sign-up avatar on the
+          right. Tapping the society opens the switch confirm. */}
+      <header className="sticky top-0 z-40 bg-surface/80 backdrop-blur-md py-4 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={handleSwitchSociety}
+          className="flex items-center gap-2 active:scale-95 transition-transform"
+        >
           <span
             className="material-symbols-outlined text-primary text-xl"
             style={{ fontVariationSettings: "'FILL' 1" }}
           >
             location_on
           </span>
-          <span className="font-headline font-extrabold text-on-surface text-lg">
+          <span className="font-headline font-extrabold text-on-surface text-base text-left line-clamp-1 max-w-[180px]">
             {society.name}
           </span>
-        </div>
+        </button>
         <Link
           href="/auth/sign-in"
-          className="bg-primary text-on-primary font-bold text-xs px-4 py-2 rounded-full"
+          aria-label="Sign in or complete profile"
+          className="w-10 h-10 rounded-full bg-primary-container flex items-center justify-center hover:bg-primary-container/80 transition-colors"
         >
-          Sign up
+          <span className="material-symbols-outlined text-on-primary-container">
+            person
+          </span>
         </Link>
       </header>
-      <div className="mt-12 bg-surface-container-low rounded-3xl p-6 text-center space-y-4">
-        <p className="font-headline font-extrabold text-on-surface text-xl">
-          Browse view coming next
+
+      {isLoading ? (
+        <div className="mt-16 flex justify-center">
+          <div
+            className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin"
+            aria-label="Loading books"
+          />
+        </div>
+      ) : isEmpty ? (
+        <EmptyState
+          society={society}
+          onShareWhatsApp={handleShareWhatsApp}
+        />
+      ) : (
+        <PopulatedState
+          society={society}
+          books={books!}
+          filtered={filtered}
+          genres={genres}
+          genreFilter={genreFilter}
+          setGenreFilter={setGenreFilter}
+          search={search}
+          setSearch={setSearch}
+        />
+      )}
+    </main>
+  );
+}
+
+/* ── Empty state (Screen 3) ───────────────────────────────────────── */
+
+function EmptyState({
+  society,
+  onShareWhatsApp,
+}: {
+  society: PendingSociety;
+  onShareWhatsApp: () => void;
+}) {
+  return (
+    <div className="mt-4">
+      <div className="flex justify-center">
+        <div className="w-56 h-56 rounded-3xl bg-tertiary-container/30 flex items-center justify-center text-7xl">
+          🐛
+        </div>
+      </div>
+      <div className="mt-8 bg-surface-container-low rounded-3xl p-6 text-center">
+        <h2 className="font-headline font-extrabold text-on-surface text-2xl leading-tight">
+          Be the first to start <br />
+          the library in{" "}
+          <span className="text-primary">{society.name}!</span>
+        </h2>
+        <p className="mt-3 text-on-surface-variant text-sm leading-relaxed">
+          It looks like it&apos;s quiet here. Plant the first seed of
+          knowledge and watch your community&apos;s bookshelf grow!
         </p>
-        <p className="text-sm text-on-surface-variant">
-          You picked <span className="font-bold">{society.name}</span> in{" "}
-          {society.city}. The book grid lands in the next deploy.
-        </p>
+      </div>
+      <div className="mt-6 space-y-3">
+        <Link
+          href="/auth/sign-in"
+          className="w-full flex items-center justify-center gap-2 bg-primary text-on-primary font-bold text-base py-4 rounded-full active:scale-95 transition-transform"
+        >
+          Complete Sign Up to List a Book
+          <span
+            className="material-symbols-outlined text-lg"
+            style={{ fontVariationSettings: "'FILL' 1" }}
+          >
+            add_circle
+          </span>
+        </Link>
         <button
           type="button"
-          onClick={() => {
-            localStorage.removeItem("bb_pending_society");
-            window.location.reload();
-          }}
-          className="text-primary font-bold text-sm"
+          onClick={onShareWhatsApp}
+          className="w-full flex items-center justify-center gap-2 bg-surface-container-high text-on-surface font-bold text-base py-3.5 rounded-full active:scale-95 transition-transform"
         >
-          Pick a different society
+          <span className="material-symbols-outlined text-primary">
+            chat
+          </span>
+          Share on WhatsApp
         </button>
       </div>
-    </main>
+    </div>
+  );
+}
+
+/* ── Populated state (Screen 4) ───────────────────────────────────── */
+
+function PopulatedState({
+  books,
+  filtered,
+  genres,
+  genreFilter,
+  setGenreFilter,
+  search,
+  setSearch,
+}: {
+  society: PendingSociety;
+  books: PublicBookRow[];
+  filtered: PublicBookRow[];
+  genres: string[];
+  genreFilter: string | null;
+  setGenreFilter: (g: string | null) => void;
+  search: string;
+  setSearch: (v: string) => void;
+}) {
+  return (
+    <>
+      {/* "Unlock borrowing" upsell — sticky-ish at the top of the
+          scroll, doesn't overlap header. */}
+      <div className="mt-3 bg-surface-container-low rounded-2xl p-4 flex items-start gap-3 shadow-sm">
+        <span
+          className="shrink-0 w-10 h-10 rounded-full bg-primary-container flex items-center justify-center"
+          aria-hidden
+        >
+          <span
+            className="material-symbols-outlined text-primary text-xl"
+            style={{ fontVariationSettings: "'FILL' 1" }}
+          >
+            auto_awesome
+          </span>
+        </span>
+        <div className="flex-1 leading-snug">
+          <h3 className="font-headline font-bold text-on-surface text-base">
+            Unlock Borrowing!
+          </h3>
+          <p className="text-xs text-on-surface-variant mt-1">
+            Complete your sign-up to start bringing these stories home.
+          </p>
+          <Link
+            href="/auth/sign-in"
+            className="mt-3 inline-flex items-center justify-center w-full bg-primary text-on-primary font-bold text-sm py-2.5 rounded-full active:scale-95 transition-transform"
+          >
+            Complete Profile
+          </Link>
+        </div>
+      </div>
+
+      {/* Search */}
+      <div className="relative mt-5">
+        <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-outline">
+          search
+        </span>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search for magical tales nearby..."
+          className="w-full bg-surface-container-low rounded-full pl-12 pr-4 py-3 text-sm text-on-surface placeholder:text-outline-variant focus:ring-2 focus:ring-primary outline-none border-none"
+        />
+      </div>
+
+      {/* Genre chips */}
+      {genres.length > 0 && (
+        <div className="mt-4 flex gap-2 overflow-x-auto pb-2">
+          <button
+            type="button"
+            onClick={() => setGenreFilter(null)}
+            className={`shrink-0 px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
+              genreFilter === null
+                ? "bg-primary text-on-primary"
+                : "bg-surface text-on-surface-variant border border-outline-variant/30"
+            }`}
+          >
+            All Books
+          </button>
+          {genres.map((g) => (
+            <button
+              key={g}
+              type="button"
+              onClick={() => setGenreFilter(g)}
+              className={`shrink-0 px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
+                genreFilter === g
+                  ? "bg-primary text-on-primary"
+                  : "bg-surface text-on-surface-variant border border-outline-variant/30"
+              }`}
+            >
+              {g}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Section header */}
+      <div className="mt-5 flex items-end justify-between">
+        <h2 className="text-3xl font-headline font-extrabold text-on-surface leading-tight">
+          Available <br /> Nearby
+        </h2>
+        <p className="text-sm text-on-surface-variant text-right leading-snug">
+          {books.length} {books.length === 1 ? "book" : "books"}
+          <br /> in your society
+        </p>
+      </div>
+
+      {/* Grid */}
+      {filtered.length === 0 ? (
+        <p className="mt-8 text-center text-on-surface-variant text-sm">
+          No matches. Try clearing the search or genre filter.
+        </p>
+      ) : (
+        <div className="mt-5 grid grid-cols-2 gap-4">
+          {filtered.map((b) => (
+            <PublicBookCard key={b.id} book={b} />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ── Card ─────────────────────────────────────────────────────────── */
+
+function PublicBookCard({ book }: { book: PublicBookRow }) {
+  const isOutOfStock = book.status === "out_of_stock";
+  const isBorrowed = book.status === "borrowed";
+
+  return (
+    <div className="bg-surface rounded-2xl shadow-sm overflow-hidden flex flex-col">
+      <div className="aspect-[3/4] bg-surface-container relative">
+        {book.cover_url ? (
+          // Plain <img> — these covers are public Open-Library URLs and
+          // we don't have a Next/image loader configured for them.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={book.cover_url}
+            alt={book.title}
+            className="w-full h-full object-cover"
+            loading="lazy"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <span className="material-symbols-outlined text-outline text-5xl">
+              menu_book
+            </span>
+          </div>
+        )}
+        {(isOutOfStock || isBorrowed) && (
+          <div className="absolute inset-x-0 bottom-0 bg-error-container/90 text-on-error-container text-[10px] font-bold uppercase tracking-wider py-1.5 text-center">
+            {isOutOfStock ? "Out of stock" : "Borrowed"}
+          </div>
+        )}
+      </div>
+      <div className="p-3 flex-1 flex flex-col gap-1">
+        <h3 className="font-headline font-bold text-on-surface text-sm leading-tight line-clamp-2">
+          {book.title}
+        </h3>
+        <div className="mt-auto flex items-center gap-1 text-xs text-on-surface-variant">
+          <span className="material-symbols-outlined text-sm">person</span>
+          <span className="line-clamp-1">Listed by {book.child_name}</span>
+        </div>
+      </div>
+    </div>
   );
 }

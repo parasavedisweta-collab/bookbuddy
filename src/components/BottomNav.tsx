@@ -12,8 +12,12 @@ const tabs = [
 export default function BottomNav() {
   const pathname = usePathname();
 
-  // Hide nav on auth pages
+  // Hide nav on auth pages and the marketing landing. /library
+  // intentionally keeps it — anonymous browsers see the same chrome
+  // they'll get post-signup, just with sign-in bounces from Shelf
+  // and Profile (handled by those pages' own gates).
   if (pathname.startsWith("/auth")) return null;
+  if (pathname === "/welcome") return null;
 
   return (
     <nav className="fixed bottom-0 inset-x-0 z-50 bg-surface/80 backdrop-blur-md border-t border-outline-variant">
