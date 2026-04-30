@@ -568,26 +568,64 @@ function LibraryBrowse({ society }: { society: PendingSociety }) {
   const [search, setSearch] = useState("");
   const [genreFilter, setGenreFilter] = useState<string | null>(null);
 
-  // Fetch books on mount. We only have a society UUID for entries that
-  // came from the Supabase typeahead — GPS / OSM / manual picks have
-  // `id = ""` because the row doesn't exist yet (it'll be created on
-  // sign-up via findOrCreateSociety). For those, the empty-state copy
-  // is correct: there are no books in a society that doesn't exist.
+  // Fetch books on mount. The picker stores three id-shapes:
+  //   - "" when the user picked via GPS / OSM / manual entry — those
+  //     paths return a name + city but no Supabase UUID.
+  //   - real UUID when the user picked from the Supabase typeahead.
+  //
+  // Empty `id` does NOT necessarily mean the society has no row in
+  // Supabase — Seawoods NRI Complex has 4 books even when reached via
+  // GPS detect. So before falling through to "no books", try resolving
+  // the UUID by name + city via the public search RPC. If we find a
+  // match, persist it back to localStorage so subsequent loads skip
+  // this lookup.
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      if (!society.id) {
+      let societyId = society.id;
+
+      if (!societyId) {
+        try {
+          const matches = await publicSearchSocieties(society.name);
+          if (cancelled) return;
+          // Match on (name, city) case-insensitively. The search RPC
+          // already does ILIKE on name; we add the city check here so
+          // a "Sunshine Society" in Delhi doesn't claim books listed
+          // under "Sunshine Society" in Mumbai.
+          const cityKey = society.city.trim().toLowerCase();
+          const nameKey = society.name.trim().toLowerCase();
+          const hit = matches.find(
+            (m) =>
+              m.name.trim().toLowerCase() === nameKey &&
+              m.city.trim().toLowerCase() === cityKey
+          );
+          if (hit) {
+            societyId = hit.id;
+            // Patch localStorage so future page loads (e.g. a refresh
+            // mid-session) skip the resolve hop.
+            setPendingSociety({ ...society, id: hit.id });
+          }
+        } catch (err) {
+          console.warn(
+            "[library] resolveSocietyId by name+city failed:",
+            err
+          );
+        }
+      }
+
+      if (!societyId) {
         if (!cancelled) setBooks([]);
         return;
       }
-      const rows = await publicListBooksForSociety(society.id);
+
+      const rows = await publicListBooksForSociety(societyId);
       if (!cancelled) setBooks(rows);
     }
     load();
     return () => {
       cancelled = true;
     };
-  }, [society.id]);
+  }, [society.id, society.name, society.city]);
 
   // Genre chips — "All Books" + every distinct category in the
   // current society's listings. Cap to a sensible width by dropping
