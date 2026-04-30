@@ -90,6 +90,24 @@ export default function WelcomePage() {
         </p>
       </section>
 
+      {/* ── Hero illustration ──────────────────────────────────────
+          Wide banner showing kids reading together — sets the
+          community tone before the marketing copy. Bleeds to the
+          screen edges on mobile (negates the px-5 main padding) for
+          a more immersive feel, then stays rounded inside the
+          content column on tablet/desktop.
+          eslint-disable-next-line @next/next/no-img-element — public
+          static asset, no Next/Image loader configured. */}
+      <section className="mt-6 -mx-5 sm:mx-0">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/welcome-hero.jpg"
+          alt="Kids reading books together in their society garden"
+          className="w-full sm:rounded-3xl object-cover aspect-[1024/434]"
+          loading="eager"
+        />
+      </section>
+
       {/* ── Pitch card ─────────────────────────────────────────── */}
       <section className="mt-8 bg-surface-container-low rounded-3xl p-6">
         <p className="text-on-surface text-sm leading-relaxed text-center">
@@ -105,15 +123,6 @@ export default function WelcomePage() {
           List your favourites. Discover your neighbours&apos; books. Borrow
           what you love.
         </p>
-
-        {/* Bookworm illustration — mascot lives below the pitch
-            copy on this page. Inline SVG-ish placeholder via emoji
-            until we have the final asset. */}
-        <div className="mt-6 flex justify-center">
-          <div className="w-32 h-32 rounded-full bg-tertiary-container/40 flex items-center justify-center text-6xl">
-            🐛
-          </div>
-        </div>
       </section>
 
       {/* ── How it works ───────────────────────────────────────── */}
