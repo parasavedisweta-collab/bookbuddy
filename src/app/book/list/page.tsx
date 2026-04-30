@@ -14,6 +14,7 @@ import { lookupBook, extractBookInfoFromOcrLLM, inferBookDetails, identifyBookFr
 import { GENRES, AGE_RANGES, type Genre, type Book } from "@/lib/types";
 import { saveListedBook, replaceLocalBookId } from "@/lib/userStore";
 import { createBook } from "@/lib/supabase/books";
+import { uploadBookCover } from "@/lib/supabase/storage";
 import { listChildrenForCurrentParent } from "@/lib/supabase/children";
 import { getCurrentUserId } from "@/lib/supabase/client";
 import { getCurrentParent } from "@/lib/supabase/parents";
@@ -550,16 +551,37 @@ export default function ListBookPage() {
             "User is likely on legacy localStorage-only data."
         );
       } else {
-        // Base64 user photos aren't suitable for text-column storage; we
-        // persist cover_source='user' with a null cover_url and rely on
-        // localStorage for the image until Supabase Storage upload is wired.
+        // Resolve cover_url before insert. For API-sourced covers the
+        // Open Library URL is ready to go. For user photos we upload
+        // the base64 to the public book-covers bucket (migration 0010)
+        // and store the returned public URL — that's what makes the
+        // photo visible to other society members and the unauthenticated
+        // /library browse, not just to the lister via localStorage.
+        //
+        // If the upload fails (network, missing bucket on a stale
+        // environment, RLS rejection) we fall back to the legacy
+        // behaviour: cover_url=null with the base64 still living in
+        // localStorage. The lister's own shelf/home merge keeps showing
+        // their photo, and the listing flow doesn't get blocked on a
+        // Storage hiccup.
         const coverSource: "api" | "user" | null =
           selectedCover === "api"
             ? "api"
             : selectedCover === "user_photo"
               ? "user"
               : null;
-        const coverUrl = coverSource === "api" ? apiCoverUrl : null;
+
+        let coverUrl: string | null = null;
+        if (coverSource === "api") {
+          coverUrl = apiCoverUrl;
+        } else if (coverSource === "user" && userPhotoBase64) {
+          coverUrl = await uploadBookCover(userPhotoBase64);
+          if (!coverUrl) {
+            console.warn(
+              "[book-list] cover upload failed; falling back to localStorage-only photo"
+            );
+          }
+        }
 
         supabaseBook = await createBook({
           child_id: child.id,
