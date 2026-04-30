@@ -71,11 +71,10 @@ export default function HomePage() {
   // Auth gate. Probes the persisted Supabase session on mount and on
   // bb_supabase_auth (fired by SupabaseAuthBootstrap on SIGNED_IN /
   // SIGNED_OUT / TOKEN_REFRESHED). No session → router.replace to
-  // /auth/sign-in so a stranger who clicked the WhatsApp link lands on
-  // the sign-in CTA instead of a demo-populated grid pretending to be
-  // Jenny. We deliberately do NOT block the other effects below on
-  // this — they run in parallel; the render gate at the bottom is what
-  // hides the feed until auth resolves.
+  // /welcome so unauthenticated visitors land on the marketing page
+  // (and from there can either Sign Up directly or peek at /library
+  // first). Without this gate, the legacy localStorage helpers would
+  // paint a demo-populated home as "Jenny".
   useEffect(() => {
     let cancelled = false;
     async function probe() {
@@ -87,15 +86,15 @@ export default function HomePage() {
           setAuthGate("authenticated");
         } else {
           setAuthGate("redirecting");
-          router.replace("/auth/sign-in");
+          router.replace("/welcome");
         }
       } catch (err) {
         // Network glitch / Supabase outage: treat as no-session and
         // redirect. Better to over-redirect than to flash demo data.
-        console.warn("[home] auth probe failed, redirecting to sign-in:", err);
+        console.warn("[home] auth probe failed, redirecting to /welcome:", err);
         if (!cancelled) {
           setAuthGate("redirecting");
-          router.replace("/auth/sign-in");
+          router.replace("/welcome");
         }
       }
     }
