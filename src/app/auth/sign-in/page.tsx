@@ -89,8 +89,56 @@ export default function SignInPage() {
     }
   }
 
+  /**
+   * Back button behaviour:
+   *   - In "code-entry" mode, step back to "email-entry" so the user
+   *     can correct the email rather than re-do the whole flow.
+   *   - In "email-entry" mode, step back to "choose".
+   *   - In "choose" mode, leave the page entirely. router.back() picks
+   *     up wherever the user came from (/welcome on cold landing,
+   *     /library after the peek-and-pick browse). When there's no
+   *     history (direct paste of /auth/sign-in URL, or a second-tab
+   *     situation) we fall back to /welcome rather than dumping them
+   *     on a 404 or letting the back button no-op.
+   */
+  function handleBack() {
+    if (mode === "code-entry") {
+      setMode("email-entry");
+      setError(null);
+      setInfo(null);
+      return;
+    }
+    if (mode === "email-entry") {
+      setMode("choose");
+      setError(null);
+      setInfo(null);
+      return;
+    }
+    // Mode === "choose"
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      router.back();
+    } else {
+      router.replace("/welcome");
+    }
+  }
+
   return (
-    <main className="flex-grow flex flex-col items-center justify-center px-6 max-w-lg mx-auto w-full py-12">
+    <main className="relative flex-grow flex flex-col items-center justify-center px-6 max-w-lg mx-auto w-full py-12">
+      {/* Back arrow — fixed to top-left so it doesn't fight with the
+          centered hero content below. Adjusts behaviour by mode (see
+          handleBack) so a partway-through OTP flow rewinds rather
+          than dropping the user back at /welcome. */}
+      <button
+        type="button"
+        onClick={handleBack}
+        aria-label="Back"
+        className="absolute top-4 left-4 w-10 h-10 inline-flex items-center justify-center rounded-full hover:bg-surface-container-low transition-colors"
+      >
+        <span className="material-symbols-outlined text-primary text-2xl">
+          arrow_back
+        </span>
+      </button>
+
       {/* Logo */}
       <div className="flex items-center gap-3 mb-8">
         <div className="w-10 h-10 rounded-full bg-secondary-container flex items-center justify-center">
