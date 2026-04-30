@@ -174,30 +174,6 @@ export default function WelcomePage() {
         </Link>
       </section>
 
-      {/* ── Footer ─────────────────────────────────────────────── */}
-      <footer className="mt-12 text-center text-xs text-on-surface-variant">
-        <p className="text-primary font-headline font-extrabold text-base">
-          BookBuds
-        </p>
-        <nav className="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
-          <Link href="/welcome" className="hover:underline">
-            Privacy
-          </Link>
-          <Link href="/welcome" className="hover:underline">
-            Terms
-          </Link>
-          <a href="mailto:help@bookbuds.in" className="hover:underline">
-            Support
-          </a>
-          <Link href="/library" className="hover:underline">
-            Library Peek
-          </Link>
-        </nav>
-        <p className="mt-3 text-outline">
-          © {new Date().getFullYear()} BookBuds. Made with joy for little
-          readers.
-        </p>
-      </footer>
     </main>
   );
 }
