@@ -20,6 +20,10 @@ import { createParent, getCurrentParent } from "@/lib/supabase/parents";
 import { createChild } from "@/lib/supabase/children";
 import { getCurrentUserId } from "@/lib/supabase/client";
 import { subscribeToPush } from "@/lib/push";
+import {
+  getPendingSociety,
+  clearPendingSociety,
+} from "@/lib/supabase/publicBrowse";
 
 interface NominatimResult {
   place_id: number;
@@ -245,6 +249,26 @@ export default function ChildSetupPage() {
     };
   }, [router]);
 
+  // Pre-fill the chosen society from `bb_pending_society` if the user
+  // came in via /library (peek-and-pick). Saves them re-doing the
+  // detect/search flow now that they've already committed to one.
+  // They can still tap "Change" on the chosen-card to override.
+  // Runs once on mount; we don't react to subsequent changes because
+  // the user might pick something else mid-form, and we don't want a
+  // late localStorage write to silently overwrite their selection.
+  useEffect(() => {
+    const pending = getPendingSociety();
+    if (!pending) return;
+    setChosen({
+      id: pending.id || societyNameToId(pending.name, pending.city),
+      name: pending.name,
+      city: pending.city,
+      source: pending.source === "gps" ? "gps" : "neighbour",
+      lat: pending.lat,
+      lng: pending.lng,
+    });
+  }, []);
+
   function pickNeighbour(s: SocietySuggestion) {
     setChosen({ id: s.id, name: s.name, city: s.city, source: "neighbour" });
     clearSearch();
@@ -423,6 +447,11 @@ export default function ChildSetupPage() {
     } catch (err) {
       console.warn("[child-setup] subscribeToPush threw:", err);
     }
+
+    // Registration is committed — clear the public-browse pending
+    // society so a future sign-out + new visit doesn't pre-fill a
+    // stale choice from this device's localStorage.
+    clearPendingSociety();
 
     router.push("/auth/success");
     setLoading(false);
