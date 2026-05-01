@@ -127,6 +127,20 @@ export default function ListBookPage() {
   const [metadataWarning, setMetadataWarning] = useState<string | null>(null);
   const [confidence, setConfidence] = useState<Confidence | null>(null);
 
+  // Keep selectedCover honest: when no API cover comes back from the
+  // vision/OCR pipeline but the user has uploaded their own photo, the
+  // only thing we can render IS the photo — but selectedCover stayed at
+  // its default "api" and the preview silently fell back to userPhoto via
+  // `apiCoverUrl ?? userPhoto`. handleConfirm then took the API branch
+  // and wrote cover_url=null, so the photo only lived on the lister's
+  // device and other readers saw the placeholder. Force the state to
+  // match what's actually visible.
+  useEffect(() => {
+    if (!apiCoverUrl && userPhoto && selectedCover === "api") {
+      setSelectedCover("user_photo");
+    }
+  }, [apiCoverUrl, userPhoto, selectedCover]);
+
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
