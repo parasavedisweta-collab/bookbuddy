@@ -190,12 +190,58 @@ export default function BookDetailPage({
   // Hooks must run on every render — keep them above the early returns,
   // otherwise the render-loading-early-then-render-page sequence trips
   // React's "rendered more hooks than during the previous render" check
-  // (React error #310). These only depend on currentChildId so computing
-  // them while `book` is still loading is harmless.
-  const isLastBook = useMemo(
-    () => getAllBooks().filter((b) => b.child_id === currentChildId && b.status === "available").length <= 1,
+  // (React error #310).
+
+  // isLastBook drives the "list another book before removing this one"
+  // gate that hides the delete button when the user has only one
+  // available book. Read from Supabase (not just localStorage) — a user
+  // who signed in via email-OTP on a fresh device has bb_books empty
+  // even though their library lives in Supabase, which used to make
+  // the local count read 0 and hide the button on every owned book.
+  // Default to true (button hidden) while we're resolving so we don't
+  // briefly show the button on a single-book user before the count
+  // comes back.
+  const localAvailableCount = useMemo(
+    () =>
+      getAllBooks().filter(
+        (b) => b.child_id === currentChildId && b.status === "available"
+      ).length,
     [currentChildId]
   );
+  const [isLastBook, setIsLastBook] = useState<boolean>(
+    localAvailableCount === 0 ? true : localAvailableCount <= 1
+  );
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const myChildren = await listChildrenForCurrentParent();
+        if (cancelled) return;
+        if (myChildren.length === 0) {
+          setIsLastBook(true);
+          return;
+        }
+        const perChild = await Promise.all(
+          myChildren.map((c) => listBooksForChild(c.id))
+        );
+        if (cancelled) return;
+        const total = perChild.reduce(
+          (sum, books) =>
+            sum + books.filter((b) => b.status === "available").length,
+          0
+        );
+        setIsLastBook(total <= 1);
+      } catch (err) {
+        console.error("[book-detail] isLastBook lookup failed:", err);
+        // Fail-open — better to show the delete button than to lock
+        // the user out of removing their book on a transient error.
+        if (!cancelled) setIsLastBook(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentChildId]);
   // Borrow gate: "you must list at least one book before borrowing".
   //
   // Synchronous localStorage check is the fast path (covers demo data and
