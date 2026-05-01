@@ -72,9 +72,11 @@ export default function HomePage() {
   // bb_supabase_auth. Three outcomes:
   //   - session live → "authenticated", show registered home
   //   - no session + pickedSociety in localStorage → "unauth", show the
-  //     same grid for that society via public RPCs
-  //   - no session + no picked society → redirect to /library so they
-  //     pick one before landing back here
+  //     same grid for that society via public RPCs (returning visitor)
+  //   - no session + no picked society (first-time visitor) →
+  //     redirect to /welcome so they see the marketing landing first.
+  //     From there "Get Started" → /auth/sign-in or "Start Browsing"
+  //     → /library picker → back to / once a society is picked.
   useEffect(() => {
     let cancelled = false;
     async function probe() {
@@ -91,16 +93,16 @@ export default function HomePage() {
           setAuthGate("unauth");
         } else {
           setAuthGate("redirecting");
-          router.replace("/library");
+          router.replace("/welcome");
         }
       } catch (err) {
-        // Network glitch / Supabase outage: treat as no-session and
-        // send to the picker. Better to over-redirect than to flash
-        // demo data.
-        console.warn("[home] auth probe failed, redirecting to /library:", err);
+        // Network glitch / Supabase outage: treat as first-time
+        // visitor and send to the marketing landing. Better to
+        // over-redirect than to flash demo data.
+        console.warn("[home] auth probe failed, redirecting to /welcome:", err);
         if (!cancelled) {
           setAuthGate("redirecting");
-          router.replace("/library");
+          router.replace("/welcome");
         }
       }
     }
