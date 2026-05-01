@@ -1,11 +1,16 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useMemo, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import BookCard from "@/components/BookCard";
 import GenreChips from "@/components/GenreChips";
 import { getAllBooks, getAllRequests, getCurrentChildId, getCurrentUserSocietyId } from "@/lib/userStore";
-import { fetchHomeBootstrap } from "@/lib/supabase/bootstrap";
+import {
+  fetchHomeBootstrap,
+  fetchUnauthHomeFeed,
+} from "@/lib/supabase/bootstrap";
+import { getPendingSociety } from "@/lib/supabase/publicBrowse";
 import { getSupabase } from "@/lib/supabase/client";
 import ShareAppButton from "@/components/ShareAppButton";
 import NotificationBell from "@/components/NotificationBell";
@@ -16,16 +21,17 @@ import type { Genre, Book, BorrowRequest } from "@/lib/types";
 /**
  * Auth-state values for the home page's render gate.
  *   - "unknown"       : initial / probe in flight, render placeholder.
- *   - "authenticated" : session live, render the feed.
- *   - "redirecting"   : no session, redirect to /auth/sign-in scheduled.
- *
- * The gate exists because the legacy localStorage helpers (getAllBooks,
- * getCurrentChildId) silently fall back to demo data + child id "c1"
- * (Jenny). Rendering the home page without a session therefore shows a
- * fake-populated grid as Jenny — which is what every WhatsApp-link
- * recipient saw before this gate landed.
+ *   - "authenticated" : session live, render the registered home.
+ *   - "unauth"        : no session BUT a society is picked in
+ *                       localStorage — render the same home grid for
+ *                       that society via the public RPCs. Auth-gated
+ *                       chrome (notification bell, list-a-book FAB) is
+ *                       hidden; tapping a book or the sign-in link
+ *                       routes to /auth/sign-in.
+ *   - "redirecting"   : no session and no picked society, redirect to
+ *                       /library so the visitor picks one first.
  */
-type AuthGate = "unknown" | "authenticated" | "redirecting";
+type AuthGate = "unknown" | "authenticated" | "unauth" | "redirecting";
 
 export default function HomePage() {
   const router = useRouter();
@@ -63,12 +69,12 @@ export default function HomePage() {
   const [isRegistered, setIsRegistered] = useState(false);
 
   // Auth gate. Probes the persisted Supabase session on mount and on
-  // bb_supabase_auth (fired by SupabaseAuthBootstrap on SIGNED_IN /
-  // SIGNED_OUT / TOKEN_REFRESHED). No session → router.replace to
-  // /welcome so unauthenticated visitors land on the marketing page
-  // (and from there can either Sign Up directly or peek at /library
-  // first). Without this gate, the legacy localStorage helpers would
-  // paint a demo-populated home as "Jenny".
+  // bb_supabase_auth. Three outcomes:
+  //   - session live → "authenticated", show registered home
+  //   - no session + pickedSociety in localStorage → "unauth", show the
+  //     same grid for that society via public RPCs
+  //   - no session + no picked society → redirect to /library so they
+  //     pick one before landing back here
   useEffect(() => {
     let cancelled = false;
     async function probe() {
@@ -78,17 +84,23 @@ export default function HomePage() {
         if (cancelled) return;
         if (data.session?.user?.id) {
           setAuthGate("authenticated");
+          return;
+        }
+        const stored = getPendingSociety();
+        if (stored) {
+          setAuthGate("unauth");
         } else {
           setAuthGate("redirecting");
-          router.replace("/welcome");
+          router.replace("/library");
         }
       } catch (err) {
         // Network glitch / Supabase outage: treat as no-session and
-        // redirect. Better to over-redirect than to flash demo data.
-        console.warn("[home] auth probe failed, redirecting to /welcome:", err);
+        // send to the picker. Better to over-redirect than to flash
+        // demo data.
+        console.warn("[home] auth probe failed, redirecting to /library:", err);
         if (!cancelled) {
           setAuthGate("redirecting");
-          router.replace("/welcome");
+          router.replace("/library");
         }
       }
     }
@@ -119,12 +131,13 @@ export default function HomePage() {
     };
   }, []);
 
-  // Single Supabase round-trip via the home_bootstrap RPC (migration
-  // 0011). Replaces what used to be three parallel useEffects firing
-  // four-plus separate queries (parent, children, society feed, my
-  // requests, is-alone) — each its own TLS handshake. On mobile 4G
-  // those round-trips stacked to 5–10s; consolidating them into one
-  // RPC drops cold-start home load to a single round-trip's worth.
+  // One Supabase round-trip per render mode:
+  //   - authenticated → home_bootstrap RPC (migration 0011) returns
+  //     parent/children/feed/requests/is-alone in one call.
+  //   - unauth (society picked) → public_list_books_for_society after
+  //     a name+city resolve hop for GPS / OSM picks. No requests, no
+  //     children, no isAlone — those concepts don't exist for an
+  //     anonymous browser.
   //
   // We re-run on the same events the legacy effects listened to so
   // any state change (registration completing, a book being added or
@@ -133,19 +146,38 @@ export default function HomePage() {
     let cancelled = false;
     async function load() {
       try {
-        const data = await fetchHomeBootstrap();
+        const supabase = getSupabase();
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
         if (cancelled) return;
-        if (!data) {
-          // RPC failed — leave whatever we already have rendered.
-          // Legacy localStorage path keeps the grid populated for
-          // local-only books, and the next event tick retries.
+
+        if (session?.user?.id) {
+          const data = await fetchHomeBootstrap();
+          if (cancelled || !data) return;
+          setSupabaseFeed(data.feed);
+          setSupabaseRequests(data.requests);
+          setMySupabaseChildIds(new Set(data.childIds));
+          setIsRegistered(Boolean(data.parent?.society_id));
+          setIsAlone(data.parent?.society_id ? data.isAlone : false);
           return;
         }
-        setSupabaseFeed(data.feed);
-        setSupabaseRequests(data.requests);
-        setMySupabaseChildIds(new Set(data.childIds));
-        setIsRegistered(Boolean(data.parent?.society_id));
-        setIsAlone(data.parent?.society_id ? data.isAlone : false);
+
+        // Unauth path. We render the same grid for the picked society
+        // via public RPCs. None of the auth-only toggles apply.
+        const pending = getPendingSociety();
+        if (!pending) {
+          setSupabaseFeed([]);
+          return;
+        }
+        const result = await fetchUnauthHomeFeed(pending);
+        if (cancelled) return;
+        setSupabaseFeed(result.feed);
+        setSocietyId(result.societyId);
+        setMySupabaseChildIds(new Set());
+        setSupabaseRequests([]);
+        setIsRegistered(false);
+        setIsAlone(false);
       } catch (err) {
         console.error("[home] bootstrap failed:", err);
       }
@@ -156,12 +188,14 @@ export default function HomePage() {
     window.addEventListener("bb_books_change", onChange);
     window.addEventListener("bb_requests_change", onChange);
     window.addEventListener("bb_supabase_auth", onChange);
+    window.addEventListener("bb_pending_society_change", onChange);
     return () => {
       cancelled = true;
       window.removeEventListener("bb_user_change", onChange);
       window.removeEventListener("bb_books_change", onChange);
       window.removeEventListener("bb_requests_change", onChange);
       window.removeEventListener("bb_supabase_auth", onChange);
+      window.removeEventListener("bb_pending_society_change", onChange);
     };
   }, []);
 
@@ -265,13 +299,11 @@ export default function HomePage() {
     mySupabaseChildIds,
   ]);
 
-  // Render gate: until we've confirmed a session, show a thin neutral
-  // placeholder. Without this, the legacy localStorage fallbacks (Jenny
-  // as default child id, demo books) would paint for one tick before
-  // the redirect lands — strangers from the WhatsApp link saw exactly
-  // that. Plain spinner, no logo / nav, so unauth visitors never glimpse
-  // the signed-in chrome.
-  if (authGate !== "authenticated") {
+  // Render gate. We render the grid for both authenticated and
+  // "unauth-with-picked-society" modes; "unknown" and "redirecting"
+  // both show a neutral placeholder so unauth visitors without a
+  // society never glimpse the home chrome before the redirect.
+  if (authGate !== "authenticated" && authGate !== "unauth") {
     return (
       <main className="flex-1 w-full flex items-center justify-center">
         <div
@@ -281,6 +313,8 @@ export default function HomePage() {
       </main>
     );
   }
+
+  const isUnauth = authGate === "unauth";
 
   return (
     <main className="flex-1 w-full max-w-2xl mx-auto">
@@ -297,12 +331,21 @@ export default function HomePage() {
               BookBuds
             </span>
           </div>
-          {/* Right-side icon group: help + notifications. HelpButton on
-              the left so the popover (anchored to its right edge) doesn't
-              collide with the bell's tap target. */}
+          {/* Right-side icon group. Auth users get help + notifications.
+              Unauth visitors get help + a Sign-in pill so they have an
+              obvious path to register from the home grid. */}
           <div className="flex items-center gap-2">
             <HelpButton />
-            <NotificationBell />
+            {isUnauth ? (
+              <Link
+                href="/auth/sign-in"
+                className="px-4 py-2 bg-primary text-on-primary text-sm font-bold rounded-full hover:bg-primary/90 transition-colors"
+              >
+                Sign in
+              </Link>
+            ) : (
+              <NotificationBell />
+            )}
           </div>
         </div>
 

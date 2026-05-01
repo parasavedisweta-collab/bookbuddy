@@ -82,9 +82,11 @@ export default function LibraryPage() {
     null
   );
 
-  // Auth + pending-society probe on mount. Logged-in users go straight
-  // to /; logged-out users with a stored pending society flip to browse;
-  // everyone else stays on the picker.
+  // Auth + pending-society probe on mount. /library is now picker-only:
+  // anyone with a session OR a previously picked society renders the
+  // unified grid at /, so /library is reached only by visitors who
+  // need to pick a society first. The legacy browse mode in this file
+  // is dead code — kept temporarily to avoid scope-creep on this PR.
   useEffect(() => {
     let cancelled = false;
     async function probe() {
@@ -99,8 +101,9 @@ export default function LibraryPage() {
         const stored = getPendingSociety();
         if (cancelled) return;
         if (stored) {
-          setPendingSocietyState(stored);
-          setMode("browse");
+          // Visitor already picked a society in a prior visit. Send
+          // them to the home grid instead of the orphan browse view.
+          router.replace("/");
         } else {
           setMode("picker");
         }
@@ -110,6 +113,9 @@ export default function LibraryPage() {
       }
     }
     probe();
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   if (mode === "checking-auth") {
@@ -249,10 +255,12 @@ function LibraryPicker() {
 
   function handlePick(s: PendingSociety) {
     setPendingSociety(s);
-    // Hard reload — the picker page reads pending society on mount and
-    // flips to the browse view. Router.refresh works too but reload
-    // resets all transient state cleanly, including search/OSM/etc.
-    window.location.assign("/library");
+    // After a pick, route to the home page — the unified grid (same
+    // BookCard / search / filters as the registered home) renders
+    // there for both authenticated and unauthenticated visitors.
+    // Hard reload so all transient picker state (search query, OSM
+    // results, etc.) drops cleanly.
+    window.location.assign("/");
   }
 
   function pickSupabase(s: PublicSocietyRow) {

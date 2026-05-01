@@ -21,7 +21,14 @@
 import { getSupabase } from "./client";
 import { mapFeedRowToBook } from "./feed";
 import { mapRequestRow } from "./requests";
-import type { Book, BorrowRequest } from "../types";
+import {
+  publicListBooksForSociety,
+  publicSearchSocieties,
+  setPendingSociety,
+  type PendingSociety,
+  type PublicBookRow,
+} from "./publicBrowse";
+import type { Book, BookStatus, BorrowRequest, Genre } from "../types";
 import type { DbBookWithListerContext } from "./books";
 
 export interface HomeBootstrap {
@@ -77,5 +84,97 @@ export async function fetchHomeBootstrap(): Promise<HomeBootstrap | null> {
     feed: (raw.feed ?? []).map(mapFeedRowToBook),
     requests: (raw.requests ?? []).map(mapRequestRow),
     isAlone: Boolean(raw.is_alone),
+  };
+}
+
+/* ── Unauthenticated home feed ─────────────────────────────────── */
+
+export interface UnauthHome {
+  /** Resolved Supabase society UUID. Empty when the picked society
+   * couldn't be matched against an existing Supabase row. */
+  societyId: string;
+  /** Books in that society, mapped to the same Book shape the
+   * authenticated home grid renders. Empty for unmatched societies. */
+  feed: Book[];
+}
+
+/**
+ * Map a public-browse row (no description, no parent context) to the
+ * Book shape the home grid expects. Loses some auth-only fields
+ * (summary stays null, child.parent_id is empty) — none of which the
+ * grid card or its filters rely on.
+ */
+function mapPublicRowToBook(row: PublicBookRow, societyId: string): Book {
+  return {
+    id: row.id,
+    child_id: row.child_id,
+    society_id: societyId,
+    title: row.title,
+    author: row.author,
+    genre: (row.category as Genre | null) ?? null,
+    age_range: row.age_range,
+    summary: null,
+    cover_url: row.cover_url,
+    cover_source:
+      row.cover_source === "user"
+        ? "user_photo"
+        : row.cover_source === "api"
+          ? "api"
+          : null,
+    status: ((row.status === "borrowed" ? "borrowed" : "available") as BookStatus),
+    listed_at: row.listed_at,
+    child: row.child_id
+      ? {
+          id: row.child_id,
+          parent_id: "",
+          name: row.child_name,
+          bookbuddy_id: "",
+          created_at: "",
+        }
+      : undefined,
+  };
+}
+
+/**
+ * Fetch the home feed for an unauthenticated visitor based on their
+ * picked society in localStorage. Mirrors the resolve hop from
+ * /library — GPS / OSM picks land here with id="" and we look up
+ * the Supabase UUID by name + city before fetching books. On a hit
+ * we patch localStorage so subsequent loads skip the resolve.
+ */
+export async function fetchUnauthHomeFeed(
+  pending: PendingSociety
+): Promise<UnauthHome> {
+  let societyId = pending.id;
+
+  if (!societyId && pending.name && pending.city) {
+    try {
+      const matches = await publicSearchSocieties(pending.name);
+      const cityKey = pending.city.trim().toLowerCase();
+      const nameKey = pending.name.trim().toLowerCase();
+      const hit = matches.find((m) => {
+        const mName = m.name.trim().toLowerCase();
+        const mCity = m.city.trim().toLowerCase();
+        const nameMatch =
+          mName === nameKey ||
+          mName.includes(nameKey) ||
+          nameKey.includes(mName);
+        return nameMatch && mCity === cityKey;
+      });
+      if (hit) {
+        societyId = hit.id;
+        setPendingSociety({ ...pending, id: hit.id });
+      }
+    } catch (err) {
+      console.warn("[bootstrap] resolve society by name+city failed:", err);
+    }
+  }
+
+  if (!societyId) return { societyId: "", feed: [] };
+
+  const rows = await publicListBooksForSociety(societyId);
+  return {
+    societyId,
+    feed: rows.map((r) => mapPublicRowToBook(r, societyId)),
   };
 }

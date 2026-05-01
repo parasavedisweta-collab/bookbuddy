@@ -90,6 +90,39 @@ export async function publicListBooksForSociety(
   return (data ?? []) as PublicBookRow[];
 }
 
+/**
+ * Single-book read for the unauthenticated /book/[id] route. Returns
+ * the same lister-child summary the list endpoint exposes, plus
+ * description (which the detail page renders below the title) and
+ * the lister's society_id (used to verify the book belongs to the
+ * society the visitor picked, so deep-links don't leak books from
+ * other societies into a visitor's session).
+ *
+ * Backed by migration 0012's public_get_book_by_id SECURITY DEFINER
+ * RPC. Returns null when not found, removed, or on RPC error.
+ */
+export interface PublicBookDetail extends PublicBookRow {
+  child_society_id: string | null;
+  description: string | null;
+}
+
+export async function publicGetBookById(
+  bookId: string
+): Promise<PublicBookDetail | null> {
+  if (!bookId) return null;
+  const supabase = getSupabase();
+  const { data, error } = await supabase.rpc("public_get_book_by_id", {
+    book_uuid: bookId,
+  });
+  if (error) {
+    console.error("[publicBrowse] get-book RPC failed:", error);
+    return null;
+  }
+  // RPC returns a setof — a single row arrives as a 1-element array.
+  const row = Array.isArray(data) ? data[0] : data;
+  return (row ?? null) as PublicBookDetail | null;
+}
+
 /* ── Pending-society localStorage ───────────────────────────────── */
 
 const PENDING_KEY = "bb_pending_society";

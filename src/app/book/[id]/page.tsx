@@ -11,7 +11,9 @@ import { listChildrenForCurrentParent } from "@/lib/supabase/children";
 import { listBooksForChild, updateBookStatus } from "@/lib/supabase/books";
 import { getListerContactForBook } from "@/lib/supabase/parents";
 import { fetchBookById } from "@/lib/supabase/feed";
-import type { Book } from "@/lib/types";
+import { publicGetBookById, type PublicBookDetail } from "@/lib/supabase/publicBrowse";
+import { getSupabase } from "@/lib/supabase/client";
+import type { Book, BookStatus, Genre } from "@/lib/types";
 import Link from "next/link";
 import Button from "@/components/ui/Button";
 import WhatsAppIcon from "@/components/ui/WhatsAppIcon";
@@ -27,6 +29,44 @@ import { whatsappLink, phoneLink } from "@/lib/helpers";
  */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Map a public-browse detail row to the app's Book shape so the same
+ * detail UI can render whether the visitor is authenticated or not.
+ * Loses parent_id on the joined child (anon-callable RPC doesn't
+ * expose it) and uses the lister-child's society_id as the book's
+ * society_id (denormalised in migration 0003).
+ */
+function mapPublicDetailToBook(row: PublicBookDetail): Book {
+  return {
+    id: row.id,
+    child_id: row.child_id,
+    society_id: row.child_society_id ?? "",
+    title: row.title,
+    author: row.author,
+    genre: (row.category as Genre | null) ?? null,
+    age_range: row.age_range,
+    summary: row.description,
+    cover_url: row.cover_url,
+    cover_source:
+      row.cover_source === "user"
+        ? "user_photo"
+        : row.cover_source === "api"
+          ? "api"
+          : null,
+    status: ((row.status === "borrowed" ? "borrowed" : "available") as BookStatus),
+    listed_at: row.listed_at,
+    child: row.child_id
+      ? {
+          id: row.child_id,
+          parent_id: "",
+          name: row.child_name,
+          bookbuddy_id: "",
+          created_at: "",
+        }
+      : undefined,
+  };
+}
+
 export default function BookDetailPage({
   params,
 }: {
@@ -35,12 +75,40 @@ export default function BookDetailPage({
   const { id } = use(params);
   const router = useRouter();
   const [currentChildId, setCurrentChildId] = useState<string>("");
+  // Tri-state auth probe. null while we check the session — important
+  // because the book lookup picks between fetchBookById (authed RLS
+  // path) and publicGetBookById (anon RPC). Probing first avoids a
+  // failed authed query when the visitor is unauth, and skips the
+  // RPC round-trip when they are signed in.
+  const [isAuthed, setIsAuthed] = useState<boolean | null>(null);
 
   useEffect(() => {
     setCurrentChildId(getCurrentChildId());
     const handler = () => setCurrentChildId(getCurrentChildId());
     window.addEventListener("bb_user_change", handler);
     return () => window.removeEventListener("bb_user_change", handler);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function probe() {
+      try {
+        const supabase = getSupabase();
+        const { data } = await supabase.auth.getSession();
+        if (cancelled) return;
+        setIsAuthed(Boolean(data.session?.user?.id));
+      } catch (err) {
+        console.warn("[book-detail] auth probe failed:", err);
+        if (!cancelled) setIsAuthed(false);
+      }
+    }
+    probe();
+    const onAuth = () => probe();
+    window.addEventListener("bb_supabase_auth", onAuth);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("bb_supabase_auth", onAuth);
+    };
   }, []);
 
   // Book resolution is a 3-state lifecycle: "loading" (we haven't decided
@@ -53,6 +121,11 @@ export default function BookDetailPage({
     useState<"loading" | "found" | "not-found">("loading");
 
   useEffect(() => {
+    // Wait for the auth probe so we route the lookup to the right
+    // path. Without this, an unauth visitor would hit fetchBookById
+    // (which requires auth via RLS) and get a "not found" flash.
+    if (isAuthed === null) return;
+
     let cancelled = false;
 
     // Try localStorage first (synchronous, covers demo data and books this
@@ -64,16 +137,23 @@ export default function BookDetailPage({
       return;
     }
 
-    // Fall back to Supabase. The home feed merges Supabase books into the
-    // grid via society_id, so any id the user can click from there either
-    // exists in Supabase or is stale — we should find it almost always.
-    // Only UUIDs warrant the remote lookup; anything else is a dead demo id.
+    // Only UUIDs warrant a remote lookup; legacy demo ids (e.g.
+    // "book_172...") have no Supabase row.
     if (!UUID_RE.test(id)) {
       setLookupState("not-found");
       return;
     }
     setLookupState("loading");
-    fetchBookById(id)
+
+    // Authed → RLS-protected join via fetchBookById. Unauth → public
+    // RPC that returns the same lister-child summary minus PII.
+    const fetcher: Promise<Book | null> = isAuthed
+      ? fetchBookById(id)
+      : publicGetBookById(id).then((row) =>
+          row ? mapPublicDetailToBook(row) : null
+        );
+
+    fetcher
       .then((found) => {
         if (cancelled) return;
         if (found) {
@@ -85,14 +165,14 @@ export default function BookDetailPage({
       })
       .catch((err) => {
         if (cancelled) return;
-        console.error("[book-detail] supabase lookup failed:", err);
+        console.error("[book-detail] lookup failed:", err);
         setLookupState("not-found");
       });
 
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, isAuthed]);
 
   // Check if current user already has a pending/approved request for this book
   const existingRequest = useMemo(() => {
@@ -121,6 +201,8 @@ export default function BookDetailPage({
     useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
+    // Skip for unauth — there's no parent to look up requests against.
+    if (!isAuthed) return;
     if (!book || !UUID_RE.test(book.id)) return;
     (async () => {
       try {
@@ -142,7 +224,7 @@ export default function BookDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [book]);
+  }, [book, isAuthed]);
 
   // Lister contact reveal — only populated when the user has an approved
   // (or further-along) borrow request. Backed by `get_lister_contact` RPC
@@ -213,6 +295,9 @@ export default function BookDetailPage({
   );
   useEffect(() => {
     let cancelled = false;
+    // Skip for unauth — they don't own books, so the gate has no
+    // role to play and the listChildren call would 401 against RLS.
+    if (!isAuthed) return;
     (async () => {
       try {
         const myChildren = await listChildrenForCurrentParent();
@@ -241,7 +326,7 @@ export default function BookDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [currentChildId]);
+  }, [currentChildId, isAuthed]);
   // Borrow gate: "you must list at least one book before borrowing".
   //
   // Synchronous localStorage check is the fast path (covers demo data and
@@ -265,6 +350,13 @@ export default function BookDetailPage({
     localHasListedBook ? true : null
   );
   useEffect(() => {
+    // Unauth visitors take a different CTA path (sign-in redirect)
+    // and don't need this gate at all. Set false so we never render
+    // the gate placeholder for them.
+    if (!isAuthed) {
+      setHasListedBook(false);
+      return;
+    }
     if (localHasListedBook) {
       setHasListedBook(true);
       return;
@@ -292,7 +384,7 @@ export default function BookDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [localHasListedBook]);
+  }, [localHasListedBook, isAuthed]);
 
   if (lookupState === "loading") {
     return (
@@ -316,7 +408,11 @@ export default function BookDetailPage({
   }
 
   const isAvailable = book.status === "available";
-  const isOwnBook = book.child_id === currentChildId;
+  // Unauth visitors are never the owner — currentChildId is "" and
+  // the book.child_id is a UUID. Force `isOwnBook` false so the
+  // "this is your book" branch can never render for an anon viewer.
+  const isOwnBook = isAuthed && book.child_id === currentChildId;
+  const isUnauth = isAuthed === false;
 
   async function handleRequest() {
     // 1. Local write first: keeps demo/unregistered users on the shelf
@@ -495,7 +591,38 @@ export default function BookDetailPage({
         )}
 
         {/* CTA */}
-        {isOwnBook ? (
+        {isUnauth ? (
+          /* Unauth visitors see the same book detail but the request
+             action requires an account — push them to sign-in. They
+             come back to the same /book/[id] URL after registering, so
+             the action they were about to take resumes naturally. */
+          <div className="space-y-3">
+            {isAvailable ? (
+              <Link
+                href={`/auth/sign-in?next=${encodeURIComponent(`/book/${id}`)}`}
+                className="block"
+              >
+                <Button fullWidth>
+                  <span className="material-symbols-outlined">local_library</span>
+                  Sign up to request
+                </Button>
+              </Link>
+            ) : (
+              <div className="bg-surface-container-low p-5 rounded-xl text-center">
+                <p className="font-headline font-bold text-on-surface-variant">
+                  Currently borrowed
+                </p>
+                <p className="text-sm text-outline mt-1">
+                  Sign up to request the next time it&apos;s available.
+                </p>
+              </div>
+            )}
+            <p className="text-xs text-center text-on-surface-variant px-4 leading-snug">
+              BookBuds is a give-and-take library — list one of your
+              kid&apos;s books to start borrowing.
+            </p>
+          </div>
+        ) : isOwnBook ? (
           <div className="space-y-3">
             <div className="bg-surface-container-high p-5 rounded-xl text-center">
               <p className="font-headline font-bold text-on-surface-variant">
