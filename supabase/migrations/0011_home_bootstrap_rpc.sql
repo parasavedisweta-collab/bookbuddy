@@ -38,7 +38,9 @@ AS $$
       SELECT auth.uid() AS uid
     ),
     p AS (
-      SELECT pa.id, pa.society_id, pa.phone, pa.name
+      -- parents.name was dropped in 0007_auth_refactor — we identify
+      -- users by their first child's name in the UI now.
+      SELECT pa.id, pa.society_id, pa.phone
       FROM public.parents pa, me
       WHERE pa.id = me.uid
     ),

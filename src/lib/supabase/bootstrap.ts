@@ -31,7 +31,6 @@ export interface HomeBootstrap {
     id: string;
     society_id: string | null;
     phone: string | null;
-    name: string | null;
   } | null;
   /** Every child owned by the current parent. Used to build the
    * "my children" id-set for the home grid's "is mine" check. */
