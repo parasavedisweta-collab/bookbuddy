@@ -5,13 +5,7 @@ import { useRouter } from "next/navigation";
 import BookCard from "@/components/BookCard";
 import GenreChips from "@/components/GenreChips";
 import { getAllBooks, getAllRequests, getCurrentChildId, getCurrentUserSocietyId } from "@/lib/userStore";
-import {
-  fetchSocietyFeed,
-  resolveCurrentSocietyId,
-} from "@/lib/supabase/feed";
-import { listChildrenForCurrentParent, isAloneInSociety } from "@/lib/supabase/children";
-import { getCurrentParent } from "@/lib/supabase/parents";
-import { fetchMyRequests } from "@/lib/supabase/requests";
+import { fetchHomeBootstrap } from "@/lib/supabase/bootstrap";
 import { getSupabase } from "@/lib/supabase/client";
 import ShareAppButton from "@/components/ShareAppButton";
 import NotificationBell from "@/components/NotificationBell";
@@ -125,111 +119,47 @@ export default function HomePage() {
     };
   }, []);
 
-  // Pull the Supabase-backed feed. Runs in parallel with the localStorage
-  // hydration above; either source can populate the grid. The `cancelled`
-  // flag guards against a late resolve on an unmounted component.
+  // Single Supabase round-trip via the home_bootstrap RPC (migration
+  // 0011). Replaces what used to be three parallel useEffects firing
+  // four-plus separate queries (parent, children, society feed, my
+  // requests, is-alone) — each its own TLS handshake. On mobile 4G
+  // those round-trips stacked to 5–10s; consolidating them into one
+  // RPC drops cold-start home load to a single round-trip's worth.
+  //
+  // We re-run on the same events the legacy effects listened to so
+  // any state change (registration completing, a book being added or
+  // removed, a request transitioning) refreshes the whole bundle.
   useEffect(() => {
     let cancelled = false;
-    async function loadSupabase() {
+    async function load() {
       try {
-        const [sid, myChildren] = await Promise.all([
-          resolveCurrentSocietyId(),
-          listChildrenForCurrentParent(),
-        ]);
+        const data = await fetchHomeBootstrap();
         if (cancelled) return;
-        setMySupabaseChildIds(new Set(myChildren.map((c) => c.id)));
-        if (!sid) {
-          // Unregistered session — no society to scope to. Feed stays
-          // whatever localStorage hands us (demo data for dev users,
-          // nothing for a fresh anon).
-          setSupabaseFeed([]);
+        if (!data) {
+          // RPC failed — leave whatever we already have rendered.
+          // Legacy localStorage path keeps the grid populated for
+          // local-only books, and the next event tick retries.
           return;
         }
-        const books = await fetchSocietyFeed(sid);
-        if (!cancelled) setSupabaseFeed(books);
+        setSupabaseFeed(data.feed);
+        setSupabaseRequests(data.requests);
+        setMySupabaseChildIds(new Set(data.childIds));
+        setIsRegistered(Boolean(data.parent?.society_id));
+        setIsAlone(data.parent?.society_id ? data.isAlone : false);
       } catch (err) {
-        console.error("[home] supabase feed load failed:", err);
+        console.error("[home] bootstrap failed:", err);
       }
     }
-    loadSupabase();
-    // Reload when the user or their local book state changes — covers
-    // registration completing mid-session and new dual-written books.
-    // bb_supabase_auth fires from SupabaseAuthBootstrap once the anon
-    // session is ready, so pages that rendered pre-session refill.
-    const onChange = () => loadSupabase();
+    load();
+    const onChange = () => load();
     window.addEventListener("bb_user_change", onChange);
     window.addEventListener("bb_books_change", onChange);
-    window.addEventListener("bb_supabase_auth", onChange);
-    return () => {
-      cancelled = true;
-      window.removeEventListener("bb_user_change", onChange);
-      window.removeEventListener("bb_books_change", onChange);
-      window.removeEventListener("bb_supabase_auth", onChange);
-    };
-  }, []);
-
-  // First-in-society check — shows an invite banner when the user is the
-  // only registered parent in their society. Uses the Supabase helper
-  // (counts distinct parent_ids in children, since parents RLS hides
-  // everyone else). Re-runs on user change so the banner disappears as
-  // soon as a neighbour joins. bb_books_change catches the case where
-  // someone else's first book listing implicitly proves they've joined.
-  useEffect(() => {
-    let cancelled = false;
-    async function check() {
-      try {
-        const parent = await getCurrentParent();
-        if (cancelled) return;
-        if (!parent?.society_id) {
-          setIsAlone(false);
-          setIsRegistered(false);
-          return;
-        }
-        setIsRegistered(true);
-        const alone = await isAloneInSociety(parent.society_id, parent.id);
-        if (!cancelled) setIsAlone(alone);
-      } catch (err) {
-        console.error("[home] isAloneInSociety check failed:", err);
-        if (!cancelled) {
-          setIsAlone(false);
-          setIsRegistered(false);
-        }
-      }
-    }
-    check();
-    const onChange = () => check();
-    window.addEventListener("bb_user_change", onChange);
-    window.addEventListener("bb_books_change", onChange);
-    window.addEventListener("bb_supabase_auth", onChange);
-    return () => {
-      cancelled = true;
-      window.removeEventListener("bb_user_change", onChange);
-      window.removeEventListener("bb_books_change", onChange);
-      window.removeEventListener("bb_supabase_auth", onChange);
-    };
-  }, []);
-
-  // Pull Supabase-backed requests so a book requested on another device
-  // stays hidden from this device's feed. Separate effect from the feed
-  // load above so a transient requests-fetch error doesn't blank the grid.
-  useEffect(() => {
-    let cancelled = false;
-    async function loadRequests() {
-      try {
-        const reqs = await fetchMyRequests();
-        if (!cancelled) setSupabaseRequests(reqs);
-      } catch (err) {
-        console.error("[home] supabase requests load failed:", err);
-      }
-    }
-    loadRequests();
-    const onChange = () => loadRequests();
-    window.addEventListener("bb_user_change", onChange);
     window.addEventListener("bb_requests_change", onChange);
     window.addEventListener("bb_supabase_auth", onChange);
     return () => {
       cancelled = true;
       window.removeEventListener("bb_user_change", onChange);
+      window.removeEventListener("bb_books_change", onChange);
       window.removeEventListener("bb_requests_change", onChange);
       window.removeEventListener("bb_supabase_auth", onChange);
     };
