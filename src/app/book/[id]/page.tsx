@@ -8,7 +8,7 @@ import {
   findActiveRequest,
 } from "@/lib/supabase/requests";
 import { listChildrenForCurrentParent } from "@/lib/supabase/children";
-import { listBooksForChild } from "@/lib/supabase/books";
+import { listBooksForChild, updateBookStatus } from "@/lib/supabase/books";
 import { getListerContactForBook } from "@/lib/supabase/parents";
 import { fetchBookById } from "@/lib/supabase/feed";
 import type { Book } from "@/lib/types";
@@ -468,7 +468,22 @@ export default function BookDetailPage({
               </div>
             ) : (
               <button
-                onClick={() => { removeListedBook(id); router.push("/shelf"); }}
+                onClick={async () => {
+                  // Mirror /shelf's onRemove: clear locally for instant UI
+                  // feedback, then soft-delete on Supabase so the row no
+                  // longer surfaces in any feed (home, library browse,
+                  // other-device shelves). Without the Supabase update the
+                  // tap looked like a no-op everywhere except this device.
+                  removeListedBook(id);
+                  if (/^[0-9a-f-]{36}$/i.test(id)) {
+                    try {
+                      await updateBookStatus(id, "removed");
+                    } catch (err) {
+                      console.error("[book-detail] supabase remove failed:", err);
+                    }
+                  }
+                  router.push("/shelf");
+                }}
                 className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-error/40 text-error font-bold text-sm hover:bg-error/10 transition-colors"
               >
                 <span className="material-symbols-outlined text-lg">delete</span>
