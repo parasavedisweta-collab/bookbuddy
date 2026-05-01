@@ -20,7 +20,6 @@
 import { getSupabase } from "./client";
 import {
   listBooksForSociety,
-  listBooksForChild,
   type DbBook,
   type DbBookWithListerContext,
 } from "./books";
@@ -172,26 +171,51 @@ export async function fetchBookById(id: string): Promise<Book | null> {
 
 /**
  * Fetch every book listed by any of the current parent's children.
- * Used by the shelf page. Walks children sequentially — we typically only
- * have one child per parent today, so a Promise.all fan-out isn't worth the
- * extra complexity.
+ * Used by the shelf page.
+ *
+ * On laptop wifi the previous implementation (sequential children →
+ * parent → per-child books) was invisible. On mobile 4G with 300–500ms
+ * RTT the three-stage chain stretched the shelf to 5–10s while older
+ * books trickled in book-by-book. This collapses it to two parallel
+ * roundtrips:
+ *   1. children + parent fan out together.
+ *   2. one books query with `.in('child_id', [...])` returns every
+ *      book across every child of this parent.
  */
 export async function fetchMyShelfBooks(): Promise<{
   books: Book[];
   childIds: string[];
 }> {
-  const children = await listChildrenForCurrentParent();
+  const [children, parent] = await Promise.all([
+    listChildrenForCurrentParent(),
+    getCurrentParent(),
+  ]);
   if (children.length === 0) return { books: [], childIds: [] };
 
-  const parent = await getCurrentParent();
   const societyId = parent?.society_id ?? "";
+  const childIds = children.map((c) => c.id);
+  const childById = new Map(children.map((c) => [c.id, c]));
 
-  const books: Book[] = [];
-  for (const child of children) {
-    const rows = await listBooksForChild(child.id);
-    for (const row of rows) {
-      books.push(mapPlainBookToBook(row, { societyId, child }));
-    }
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("books")
+    .select(
+      "id, child_id, title, author, isbn, description, category, cover_url, cover_source, status, listed_at, metadata"
+    )
+    .in("child_id", childIds)
+    .neq("status", "removed")
+    .order("listed_at", { ascending: false });
+
+  if (error) {
+    console.error("[feed] fetchMyShelfBooks failed:", error);
+    return { books: [], childIds };
   }
-  return { books, childIds: children.map((c) => c.id) };
+
+  const books = (data ?? []).map((row) =>
+    mapPlainBookToBook(row as DbBook, {
+      societyId,
+      child: childById.get(row.child_id),
+    })
+  );
+  return { books, childIds };
 }
