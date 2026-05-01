@@ -332,7 +332,24 @@ export default function ChildSetupPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!childName || !phoneValid || !allowPush || !chosen) return;
+    // Push opt-in is required: borrow requests can't reach the lister
+    // without a notification surface. We used to disable the submit
+    // button when the box was unchecked, which left users tapping a
+    // dead button with no feedback. Now we surface an inline error so
+    // the reason is obvious and they know exactly what to do.
+    if (!childName || !phoneValid || !chosen) return;
+    if (!allowPush) {
+      setSubmitError(
+        "Please allow push notifications to continue. We use them to ping you when neighbours request your books."
+      );
+      // Scroll the error into view in case the checkbox is below the
+      // fold on shorter screens.
+      if (typeof window !== "undefined") {
+        const node = document.getElementById("push-opt-in");
+        node?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return;
+    }
     setSubmitError(null);
     setLoading(true);
 
@@ -915,32 +932,54 @@ export default function ChildSetupPage() {
             requests fall flat without a way to ping the lister, so we
             ask up-front. Users can later toggle off from Profile if
             they change their mind. */}
-        <label className="flex items-start gap-3 cursor-pointer bg-surface-container-low rounded-xl p-4">
-          <input
-            type="checkbox"
-            checked={allowPush}
-            onChange={(e) => setAllowPush(e.target.checked)}
-            className="mt-1 w-5 h-5 rounded border-outline-variant text-primary focus:ring-primary-container"
-          />
-          <div className="flex-1 leading-tight">
-            <p className="text-on-surface font-bold text-sm flex items-center gap-1.5">
-              <span
-                className="material-symbols-outlined text-primary text-base"
-                style={{ fontVariationSettings: "'FILL' 1" }}
-              >
-                notifications_active
+        <div id="push-opt-in" className="space-y-2">
+          {submitError && !allowPush && (
+            <div
+              role="alert"
+              className="bg-error-container/50 border border-error/40 rounded-xl p-3 flex items-start gap-2"
+            >
+              <span className="material-symbols-outlined text-error shrink-0 mt-0.5 text-lg">
+                error
               </span>
-              Allow push notifications
-            </p>
-            <p className="text-xs text-on-surface-variant mt-1">
-              We&apos;ll let you know when neighbours request your books or
-              reply to yours. You can change this any time from your
-              profile.
-            </p>
-          </div>
-        </label>
+              <p className="text-sm text-on-error-container leading-snug font-semibold">
+                {submitError}
+              </p>
+            </div>
+          )}
+          <label
+            className={`flex items-start gap-3 cursor-pointer bg-surface-container-low rounded-xl p-4 ${
+              submitError && !allowPush ? "ring-2 ring-error/40" : ""
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={allowPush}
+              onChange={(e) => {
+                setAllowPush(e.target.checked);
+                if (e.target.checked) setSubmitError(null);
+              }}
+              className="mt-1 w-5 h-5 rounded border-outline-variant text-primary focus:ring-primary-container"
+            />
+            <div className="flex-1 leading-tight">
+              <p className="text-on-surface font-bold text-sm flex items-center gap-1.5">
+                <span
+                  className="material-symbols-outlined text-primary text-base"
+                  style={{ fontVariationSettings: "'FILL' 1" }}
+                >
+                  notifications_active
+                </span>
+                Allow push notifications
+              </p>
+              <p className="text-xs text-on-surface-variant mt-1">
+                We&apos;ll let you know when neighbours request your books or
+                reply to yours. You can change this any time from your
+                profile.
+              </p>
+            </div>
+          </label>
+        </div>
 
-        {submitError && (
+        {submitError && allowPush && (
           <div
             role="alert"
             className="bg-error-container/50 border border-error/30 rounded-xl p-4 flex items-start gap-3"
@@ -960,7 +999,6 @@ export default function ChildSetupPage() {
           disabled={
             !childName ||
             !phoneValid ||
-            !allowPush ||
             !chosen ||
             loading
           }
