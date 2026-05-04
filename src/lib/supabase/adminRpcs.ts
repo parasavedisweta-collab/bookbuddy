@@ -98,3 +98,46 @@ export async function adminListBorrowRequests(): Promise<AdminBorrowRequestRow[]
   }
   return (data ?? []) as AdminBorrowRequestRow[];
 }
+
+/* ── Funnel ─────────────────────────────────────────────────────── */
+
+export type FunnelStage =
+  | "visited"
+  | "viewed_books"
+  | "registered"
+  | "listed_book";
+
+export interface AdminFunnelSummaryRow {
+  event_type: FunnelStage;
+  visitor_count: number;
+}
+
+export async function adminFunnelSummary(): Promise<AdminFunnelSummaryRow[]> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase.rpc("admin_funnel_summary");
+  if (error) {
+    console.error("[admin] admin_funnel_summary RPC failed:", error);
+    return [];
+  }
+  return (data ?? []) as AdminFunnelSummaryRow[];
+}
+
+export interface AdminFunnelVisitorRow {
+  visitor_id: string;
+  max_stage: FunnelStage | "unknown";
+  last_seen: string;
+  parent_id: string | null;
+  society_id: string | null;
+  society_name: string | null;
+  event_count: number;
+}
+
+export async function adminFunnelVisitors(): Promise<AdminFunnelVisitorRow[]> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase.rpc("admin_funnel_visitors");
+  if (error) {
+    console.error("[admin] admin_funnel_visitors RPC failed:", error);
+    return [];
+  }
+  return (data ?? []) as AdminFunnelVisitorRow[];
+}

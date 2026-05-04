@@ -14,6 +14,7 @@ import { lookupBook, extractBookInfoFromOcrLLM, inferBookDetails, identifyBookFr
 import { GENRES, AGE_RANGES, type Genre, type Book } from "@/lib/types";
 import { saveListedBook, replaceLocalBookId } from "@/lib/userStore";
 import { createBook } from "@/lib/supabase/books";
+import { logFunnelEvent } from "@/lib/supabase/funnel";
 import { uploadBookCover } from "@/lib/supabase/storage";
 import { listChildrenForCurrentParent } from "@/lib/supabase/children";
 import { getCurrentUserId } from "@/lib/supabase/client";
@@ -612,7 +613,21 @@ export default function ListBookPage() {
         });
         if (!supabaseBook) {
           console.warn("[book-list] Supabase createBook returned null");
-        } else if (localBook?.id) {
+        } else {
+          // Funnel: stage 4 — first successful book listing. Patches
+          // the visitor_id ↔ parent_id link so the admin Users tab
+          // sees this lister as "registered + listed". child.parent_id
+          // is the auth.uid() of the lister (per migration 0007). The
+          // dedupScope is empty so a heavy lister fires one event per
+          // book — the admin distinct-visitor count is unaffected, but
+          // we get the per-book trail in the events table for free.
+          void logFunnelEvent("listed_book", {
+            parentId: child.parent_id,
+            societyId: child.society_id,
+            bookId: supabaseBook.id,
+          });
+        }
+        if (supabaseBook && localBook?.id) {
           // Re-key the local copy to the Supabase UUID so the shelf/home
           // merge treats them as a single book. Without this the user
           // sees one card for the localStorage id (with the base64 cover

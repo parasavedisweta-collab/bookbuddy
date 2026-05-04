@@ -7,8 +7,13 @@ import {
   isAdmin,
   adminListUsers,
   adminListBorrowRequests,
+  adminFunnelSummary,
+  adminFunnelVisitors,
   type AdminUserRow,
   type AdminBorrowRequestRow,
+  type AdminFunnelSummaryRow,
+  type AdminFunnelVisitorRow,
+  type FunnelStage,
 } from "@/lib/supabase/adminRpcs";
 import { mapFeedRowToBook } from "@/lib/supabase/feed";
 import type { DbBookWithListerContext } from "@/lib/supabase/books";
@@ -126,6 +131,169 @@ function BookPill({ book }: { book: Book }) {
   );
 }
 
+// ─── Funnel ───────────────────────────────────────────────────────────────────
+//
+// Conversion view of the four stages an unauthenticated visitor
+// passes through before becoming a listing user. Counts come from the
+// admin_funnel_summary RPC (distinct visitor_ids per event). The
+// stages are independent — a visitor with both `viewed_books` and
+// `registered` events counts in both — so the conversion % column is
+// "this stage / previous stage" not "this stage / total".
+const FUNNEL_STAGES: { id: FunnelStage; label: string; color: string }[] = [
+  { id: "visited",      label: "Visited",         color: "bg-primary"      },
+  { id: "viewed_books", label: "Viewed books",    color: "bg-secondary"    },
+  { id: "registered",   label: "Registered",      color: "bg-tertiary"     },
+  { id: "listed_book",  label: "Listed a book",   color: "bg-error"        },
+];
+
+function FunnelCard({ funnel }: { funnel: AdminFunnelSummaryRow[] }) {
+  const byStage = new Map(funnel.map((r) => [r.event_type, r.visitor_count]));
+  const counts = FUNNEL_STAGES.map((s) => ({
+    ...s,
+    count: byStage.get(s.id) ?? 0,
+  }));
+  const top = counts[0]?.count ?? 0;
+
+  return (
+    <div className="bg-surface-container-lowest rounded-xl shadow-sm p-6 mb-4">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-on-surface font-headline font-extrabold text-base">
+          Conversion funnel
+        </h2>
+        <p className="text-xs text-outline">
+          Distinct visitors per stage · % vs previous stage
+        </p>
+      </div>
+      <div className="space-y-3">
+        {counts.map((s, i) => {
+          const prev = i === 0 ? null : counts[i - 1].count;
+          const pct =
+            prev && prev > 0 ? Math.round((s.count / prev) * 100) : null;
+          // Bar width is proportional to the top of the funnel so
+          // visual scale is consistent across the four bars.
+          const widthPct = top > 0 ? Math.max(6, (s.count / top) * 100) : 0;
+          return (
+            <div key={s.id}>
+              <div className="flex items-center justify-between text-sm mb-1">
+                <span className="font-bold text-on-surface">{s.label}</span>
+                <span className="font-mono text-on-surface">
+                  {s.count}
+                  {pct !== null && (
+                    <span className="ml-2 text-xs text-outline">
+                      ({pct}%)
+                    </span>
+                  )}
+                </span>
+              </div>
+              <div className="h-3 rounded-full bg-surface-container-high overflow-hidden">
+                <div
+                  className={`h-full ${s.color} transition-[width]`}
+                  style={{ width: `${widthPct}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {top === 0 && (
+        <p className="text-xs text-outline mt-4">
+          No funnel events recorded yet. Events will appear here as
+          visitors land on the site.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─── Anonymous Visitors ──────────────────────────────────────────────────────
+//
+// All visitor_ids that have funnel events. Once a visitor registers,
+// their parent_id is patched on subsequent events so we can either
+// hide them (they become a regular Users row) or surface "registered
+// from <visitor_id>" cross-reference. We hide them by default to keep
+// the section focused on un-converted visitors who admins might want
+// to chase.
+function AnonymousVisitorsSection({
+  visitors,
+}: {
+  visitors: AdminFunnelVisitorRow[];
+}) {
+  const unregistered = visitors.filter((v) => !v.parent_id);
+
+  if (unregistered.length === 0) {
+    return null;
+  }
+
+  const stageLabel: Record<FunnelStage | "unknown", string> = {
+    visited: "Visited",
+    viewed_books: "Viewed books",
+    registered: "Registered",
+    listed_book: "Listed a book",
+    unknown: "—",
+  };
+  const stageColor: Record<FunnelStage | "unknown", string> = {
+    visited: "bg-primary-container/40 text-on-surface",
+    viewed_books: "bg-secondary-container/40 text-on-surface",
+    registered: "bg-tertiary-container/40 text-on-surface",
+    listed_book: "bg-error-container/40 text-on-surface",
+    unknown: "bg-surface-container-high text-outline",
+  };
+
+  return (
+    <div className="bg-surface-container-lowest rounded-xl shadow-sm p-6 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-on-surface font-headline font-extrabold text-base">
+          Anonymous visitors
+        </h2>
+        <p className="text-xs text-outline">
+          {unregistered.length} not registered yet
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-left text-xs uppercase tracking-wider text-outline">
+            <tr>
+              <th className="px-3 py-2 font-bold">Visitor</th>
+              <th className="px-3 py-2 font-bold">Reached</th>
+              <th className="px-3 py-2 font-bold">Society</th>
+              <th className="px-3 py-2 font-bold text-right">Events</th>
+              <th className="px-3 py-2 font-bold text-right">Last seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {unregistered.map((v) => (
+              <tr
+                key={v.visitor_id}
+                className="border-t border-outline-variant/20"
+              >
+                <td className="px-3 py-2 font-mono text-xs text-outline">
+                  {v.visitor_id.slice(0, 8)}…
+                </td>
+                <td className="px-3 py-2">
+                  <span
+                    className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded-full ${stageColor[v.max_stage]}`}
+                  >
+                    {stageLabel[v.max_stage]}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-on-surface-variant">
+                  {v.society_name ?? "—"}
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-xs">
+                  {v.event_count}
+                </td>
+                <td className="px-3 py-2 text-right text-xs text-outline">
+                  {new Date(v.last_seen).toLocaleString()}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ─── Users View ───────────────────────────────────────────────────────────────
 //
 // One row per (parent, child) combo. The admin RPC returns parents
@@ -137,22 +305,29 @@ function UsersView({
   users,
   books,
   requests,
+  funnel,
+  funnelVisitors,
 }: {
   users: AdminUserRow[];
   books: Book[];
   requests: BorrowRequest[];
+  funnel: AdminFunnelSummaryRow[];
+  funnelVisitors: AdminFunnelVisitorRow[];
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  if (users.length === 0) {
-    return (
-      <p className="text-center text-on-surface-variant py-12 text-sm">
-        No users registered yet.
-      </p>
-    );
-  }
-
+  // We no longer hide the whole tab when there are no registered
+  // parents — funnel + anonymous visitors are interesting to admin
+  // even before the first registration.
   return (
+    <>
+      <FunnelCard funnel={funnel} />
+      <AnonymousVisitorsSection visitors={funnelVisitors} />
+      {users.length === 0 ? (
+        <p className="text-center text-on-surface-variant py-6 text-sm">
+          No registered users yet.
+        </p>
+      ) : (
     <div className="space-y-3">
       {users.map((u) => {
         // Each row's stable key — parent_id alone collides for parents
@@ -305,6 +480,8 @@ function UsersView({
         );
       })}
     </div>
+      )}
+    </>
   );
 }
 
@@ -700,6 +877,13 @@ export default function AdminPage() {
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [books, setBooks] = useState<Book[]>([]);
   const [requests, setRequests] = useState<BorrowRequest[]>([]);
+  // Funnel state. summary drives the four-stage card; visitors drives
+  // the anonymous-visitors section in the Users tab. Both filled by
+  // admin_funnel_summary / admin_funnel_visitors RPCs (migration 0013).
+  const [funnel, setFunnel] = useState<AdminFunnelSummaryRow[]>([]);
+  const [funnelVisitors, setFunnelVisitors] = useState<
+    AdminFunnelVisitorRow[]
+  >([]);
 
   // Auth gate. Two failure modes — no session (kicked to /auth/sign-in)
   // and signed-in-but-not-admin (kicked to /). Both end up off this
@@ -748,7 +932,13 @@ export default function AdminPage() {
     async function load() {
       try {
         const supabase = getSupabase();
-        const [userRows, requestRows, bookRowsResult] = await Promise.all([
+        const [
+          userRows,
+          requestRows,
+          bookRowsResult,
+          funnelRows,
+          funnelVisitorRows,
+        ] = await Promise.all([
           adminListUsers(),
           adminListBorrowRequests(),
           // books.SELECT is permissive RLS, so admin reads it directly
@@ -764,6 +954,8 @@ export default function AdminPage() {
             )
             .neq("status", "removed")
             .order("listed_at", { ascending: false }),
+          adminFunnelSummary(),
+          adminFunnelVisitors(),
         ]);
         if (cancelled) return;
 
@@ -779,6 +971,8 @@ export default function AdminPage() {
         setUsers(userRows);
         setBooks(mappedBooks);
         setRequests(mappedRequests);
+        setFunnel(funnelRows);
+        setFunnelVisitors(funnelVisitorRows);
       } catch (err) {
         console.error("[admin] data load failed:", err);
       }
@@ -915,7 +1109,7 @@ export default function AdminPage() {
       {/* Content */}
       <div className="p-6">
         <div className="bg-surface-container-lowest rounded-xl shadow-sm p-6">
-          {tab === "users"        && <UsersView        users={users} books={books} requests={requests} />}
+          {tab === "users"        && <UsersView        users={users} books={books} requests={requests} funnel={funnel} funnelVisitors={funnelVisitors} />}
           {tab === "transactions" && <TransactionsView books={books} requests={requests} />}
           {tab === "books"        && <BooksView        books={books} requests={requests} />}
           {tab === "societies"    && <SocietiesView    societies={societies} />}

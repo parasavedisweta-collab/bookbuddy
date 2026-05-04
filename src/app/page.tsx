@@ -11,6 +11,7 @@ import {
   fetchUnauthHomeFeed,
 } from "@/lib/supabase/bootstrap";
 import { getPendingSociety } from "@/lib/supabase/publicBrowse";
+import { logFunnelEvent } from "@/lib/supabase/funnel";
 import { getSupabase } from "@/lib/supabase/client";
 import ShareAppButton from "@/components/ShareAppButton";
 import NotificationBell from "@/components/NotificationBell";
@@ -180,6 +181,16 @@ export default function HomePage() {
         setSupabaseRequests([]);
         setIsRegistered(false);
         setIsAlone(false);
+        // Funnel: stage 2 — anonymous visitor gave location (or
+        // searched/manual-picked) AND we successfully resolved a
+        // society in Supabase. Fires once per (visitor, society) so
+        // a return visit to the same society doesn't double-count.
+        if (result.societyId) {
+          void logFunnelEvent("viewed_books", {
+            societyId: result.societyId,
+            dedupScope: result.societyId,
+          });
+        }
       } catch (err) {
         console.error("[home] bootstrap failed:", err);
       }
