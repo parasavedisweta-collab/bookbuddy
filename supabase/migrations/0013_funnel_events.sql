@@ -155,7 +155,10 @@ AS $$
         ELSE 0
       END) AS max_stage_n,
       MAX(fe.created_at) AS last_seen,
-      MAX(fe.parent_id)  AS parent_id,
+      -- parent_id: pick the most recent non-null. UUID has no MAX
+      -- aggregate so we use the same array-agg pattern as society_id.
+      (ARRAY_AGG(fe.parent_id ORDER BY fe.created_at DESC)
+        FILTER (WHERE fe.parent_id IS NOT NULL))[1] AS parent_id,
       -- Society: prefer the most recent non-null pick
       (ARRAY_AGG(fe.society_id ORDER BY fe.created_at DESC)
         FILTER (WHERE fe.society_id IS NOT NULL))[1] AS society_id,
