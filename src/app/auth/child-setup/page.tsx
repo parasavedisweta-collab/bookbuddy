@@ -19,6 +19,7 @@ import {
 import { createParent, getCurrentParent } from "@/lib/supabase/parents";
 import { createChild } from "@/lib/supabase/children";
 import { getCurrentUserId } from "@/lib/supabase/client";
+import { logFunnelEvent } from "@/lib/supabase/funnel";
 import { subscribeToPush } from "@/lib/push";
 import {
   getPendingSociety,
@@ -366,6 +367,7 @@ export default function ChildSetupPage() {
     // inserts fail, we bail BEFORE writing localStorage or navigating —
     // otherwise the user lands on a success screen backed by no server
     // data, home feed stays empty, and requests can't route to them.
+    let registeredSocietyId: string | null = null;
     try {
       const society = await findOrCreateSociety(chosen.name, chosen.city);
       if (!society) {
@@ -375,6 +377,7 @@ export default function ChildSetupPage() {
         setLoading(false);
         return;
       }
+      registeredSocietyId = society.id;
 
       const parent = await createParent({
         phone: phoneDigits,
@@ -469,6 +472,16 @@ export default function ChildSetupPage() {
     // society so a future sign-out + new visit doesn't pre-fill a
     // stale choice from this device's localStorage.
     clearPendingSociety();
+
+    // Funnel: stage 3 — visitor finished registration. Patches their
+    // visitor_id ↔ parent_id link so the admin Users tab can correlate
+    // the anonymous funnel rows with the new registered parent. Best-
+    // effort; failure to log doesn't block navigation.
+    void logFunnelEvent("registered", {
+      parentId: uid,
+      societyId: registeredSocietyId,
+      dedupScope: uid,
+    });
 
     router.push("/auth/success");
     setLoading(false);

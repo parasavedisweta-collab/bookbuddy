@@ -18,6 +18,8 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect } from "react";
+import { logFunnelEvent } from "@/lib/supabase/funnel";
 
 const HOW_IT_WORKS: Array<{ n: number; title: string; body: string; color: string }> = [
   {
@@ -59,6 +61,14 @@ const HOW_IT_WORKS: Array<{ n: number; title: string; body: string; color: strin
 ];
 
 export default function WelcomePage() {
+  // Funnel: stage 1 — visitor landed on the marketing surface. Deduped
+  // per device so a refresh on the same browser session doesn't bump
+  // the count. The dedupScope key is reset only when localStorage is
+  // cleared.
+  useEffect(() => {
+    void logFunnelEvent("visited", { dedupScope: "session" });
+  }, []);
+
   return (
     <main className="flex-1 w-full max-w-2xl mx-auto px-5 pb-12">
       {/* ── Top bar: logo + Get Started ─────────────────────────── */}
